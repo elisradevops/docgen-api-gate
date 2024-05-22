@@ -3,6 +3,6 @@ WORKDIR /usr/app
 COPY . . 
 
 RUN chmod 777 s3-init.sh
-RUN chmod 777 /usr/bin/mc
+RUN chmod 777 mc
 
 CMD ["./s3-init.sh"]
