@@ -1,4 +1,8 @@
 FROM ubuntu:20.04
 WORKDIR /usr/app
 COPY . . 
+
+RUN chmod 777 s3-init.sh
+RUN chmod 777 /usr/bin/mc
+
 CMD ["./s3-init.sh"]
