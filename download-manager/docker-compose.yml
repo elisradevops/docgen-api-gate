@@ -7,13 +7,13 @@ x-common-variables: &common-vars
   MINIO_REGION: "ap-southeast-1"
 services:
   dg-fe:
-    image: assafushy/dg-front-end:latest
+    image: elisradevops/docgen-frontend:latest
     ports:
       - "80:80"
     environment:
       BACKEND-URL-PLACEHOLDER-ContentControl: "http://dg-api-gate:3001"
   dg-init-job:
-    image: assafushy/dg-initializer:latest
+    image: elisradevops/docgen-initializer:latest
     depends_on:
       - "s3"
     environment:
@@ -21,11 +21,11 @@ services:
       MINIOROOTUSER: "your-root-user"
       MINIOROOTPASSWORD: "your-root-password"
   dg-content-control:
-    image: assafushy/dg-content-control-generator:latest
+    image: elisradevops/docgen-content-control:latest
     ports:
       - "3000:3000"
   dg-api-gate:
-    image: assafushy/dg-api-gate:latest
+    image: elisradevops/docgen-api-gate:latest
     ports:
       - "3001:3000"
     environment:
@@ -34,7 +34,7 @@ services:
       dgContentControlUrl: "http://dg-content-control:3000"
       jsonToWordPostUrl: "http://json-to-word:5000"
   json-to-word:
-    image: assafushy/json-to-word:latest
+    image: elisradevops/docgen-json-to-word:latest
     ports:
       - "5000:5000"
   s3:
