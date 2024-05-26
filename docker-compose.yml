@@ -7,7 +7,7 @@ x-common-variables: &common-vars
   MINIO_REGION: "ap-southeast-1"
 services:
   dg-fe:
-    image: assafushy/dg-front-end:latest
+    image: elisradevops/docgen-frontend:latest
     ports:
       - "80:80"
     environment:
@@ -26,7 +26,7 @@ services:
       jsonToWordPostUrl: "http://json-to-word:5000"
       minioPublicEndPoint: "http://localhost:9000"
   dg-init-job:
-    image: assafushy/dg-initializer:latest
+    image: elisradevops/docgen-initializer:latest
     depends_on:
       - "s3"
     environment:
@@ -34,7 +34,7 @@ services:
       MINIOROOTUSER: "your-root-user"
       MINIOROOTPASSWORD: "your-root-password"
   dg-content-control:
-    image: assafushy/dg-content-control-generator:latest
+    image: elisradevops/docgen-content-control:latest
     ports:
       - "3000:3000"
   json-to-word:
@@ -51,3 +51,7 @@ services:
     environment:
       <<: *common-vars
     command: server --address 0.0.0.0:9000  --console-address ":4000" /data
+  python-download-service:
+    image: elisradevops/docgen-download-manager:latest
+    ports:
+      - "8000:8000"
