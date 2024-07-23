@@ -10,77 +10,11 @@ export class MinioController {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.params);
       let minioRequest: MinioRequest = JSON.parse(jsonReq);
-      const s3Client = new Minio.Client({
-        endPoint: process.env.MINIO_ENDPOINT,
-        port: 9000,
-        useSSL: false,
-        accessKey: process.env.MINIO_ROOT_USER,
-        secretKey: process.env.MINIO_ROOT_PASSWORD,
-      });
+      const s3Client = this.initS3Client();
       try {
         let objects = [];
-
-        let url = '';
-        this.standardizeRequest(minioRequest);
-        if (req.query.isExternalUrl == 'true') {
-          url = `${process.env.minioPublicEndPoint}/${minioRequest.bucketName}/`;
-        } else {
-          url = `${process.env.MINIOSERVER}/${minioRequest.bucketName}/`;
-        }
-        let stream = s3Client.listObjectsV2(minioRequest.bucketName);
-        stream.on('data', (obj) => {
-          obj.url = url + obj.name;
-          objects.push(obj);
-        });
-        stream.on('end', (obj) => {
-          return resolve(objects);
-        });
-        stream.on('error', (obj) => {
-          logger.error(obj);
-          return [];
-        });
-        return objects;
-      } catch (err) {
-        logger.error(err);
-        reject([]);
-      }
-    });
-  }
-
-  public async getBucketFileListFromFolder(req: Request, res: Response) {
-    return new Promise((resolve, reject) => {
-      let jsonReq = JSON.stringify(req.params);
-      let minioRequest: MinioRequest = JSON.parse(jsonReq);
-      logger.info(`minirequest from folder ${JSON.stringify(minioRequest)}`);
-      const s3Client = new Minio.Client({
-        endPoint: process.env.MINIO_ENDPOINT,
-        port: 9000,
-        useSSL: false,
-        accessKey: process.env.MINIO_ROOT_USER,
-        secretKey: process.env.MINIO_ROOT_PASSWORD,
-      });
-      try {
-        let objects = [];
-
-        let url = '';
-        this.standardizeRequest(minioRequest);
-        if (req.query.isExternalUrl == 'true') {
-          url = `${process.env.minioPublicEndPoint}/${minioRequest.bucketName}/${minioRequest.folderName}/`;
-        } else {
-          url = `${process.env.MINIOSERVER}/${minioRequest.bucketName}/${minioRequest.folderName}/`;
-        }
-        let stream = s3Client.listObjectsV2(minioRequest.bucketName, minioRequest.folderName, true);
-        stream.on('data', (obj) => {
-          obj.url = url + obj.name;
-          objects.push(obj);
-        });
-        stream.on('end', (obj) => {
-          return resolve(objects);
-        });
-        stream.on('error', (obj) => {
-          logger.error(obj);
-          return [];
-        });
+        let url = this.SetUrl(minioRequest, req);
+        this.handleStream(s3Client, req, minioRequest, url, objects, resolve);
         return objects;
       } catch (err) {
         logger.error(err);
@@ -93,14 +27,7 @@ export class MinioController {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.params);
       let minioRequest: MinioRequest = JSON.parse(jsonReq);
-      logger.info(`minirequest ${JSON.stringify(minioRequest)}`);
-      const s3Client = new Minio.Client({
-        endPoint: process.env.MINIO_ENDPOINT,
-        port: 9000,
-        useSSL: false,
-        accessKey: process.env.MINIO_ROOT_USER,
-        secretKey: process.env.MINIO_ROOT_PASSWORD,
-      });
+      const s3Client = this.initS3Client();
       this.standardizeRequest(minioRequest);
       let miniData = '';
 
@@ -119,7 +46,6 @@ export class MinioController {
             let cleaned = String(miniData).replace(/(\r\n|\n|\r)/gm, '');
             cleaned = String(cleaned).replace(/ /g, '');
             const json = JSON.parse(cleaned);
-            logger.info(cleaned);
             return resolve(json);
           });
           dataStream.on('error', (streamErr) => {
@@ -134,13 +60,7 @@ export class MinioController {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.body);
       let minioRequest: MinioRequest = JSON.parse(jsonReq);
-      const s3Client = new Minio.Client({
-        endPoint: process.env.MINIO_ENDPOINT,
-        port: 9000,
-        useSSL: false,
-        accessKey: process.env.MINIO_ROOT_USER,
-        secretKey: process.env.MINIO_ROOT_PASSWORD,
-      });
+      const s3Client = this.initS3Client();
       this.standardizeRequest(minioRequest);
 
       // Define the lifecycle policy
@@ -206,5 +126,56 @@ export class MinioController {
     minioRequest.bucketName = minioRequest.bucketName.toLowerCase();
     minioRequest.bucketName = minioRequest.bucketName.replace('_', '-');
     minioRequest.bucketName = minioRequest.bucketName.replace(' ', '');
+  }
+
+  private initS3Client() {
+    return new Minio.Client({
+      endPoint: process.env.MINIO_ENDPOINT,
+      port: 9000,
+      useSSL: false,
+      accessKey: process.env.MINIO_ROOT_USER,
+      secretKey: process.env.MINIO_ROOT_PASSWORD,
+    });
+  }
+
+  private SetUrl(minioRequest: MinioRequest, req) {
+    let url = '';
+    this.standardizeRequest(minioRequest);
+    let folderName = req.query.docType;
+    let suffix =
+      folderName === undefined ? `${minioRequest.bucketName}/` : `${minioRequest.bucketName}/${folderName}/`;
+    if (req.query.isExternalUrl == 'true') {
+      url = `${process.env.minioPublicEndPoint}/${suffix}`;
+    } else {
+      url = `${process.env.MINIOSERVER}/${suffix}`;
+    }
+    return url;
+  }
+
+  private handleStream(
+    s3Client: any,
+    req: Request,
+    minioRequest: MinioRequest,
+    url: string,
+    objects: any[],
+    resolve: (value: unknown) => void
+  ) {
+    let folderName = req.query.docType;
+
+    let stream =
+      folderName === undefined
+        ? s3Client.listObjectsV2(minioRequest.bucketName)
+        : s3Client.listObjectsV2(minioRequest.bucketName, folderName, true);
+    stream.on('data', (obj) => {
+      obj.url = url + obj.name;
+      objects.push(obj);
+    });
+    stream.on('end', (obj) => {
+      return resolve(objects);
+    });
+    stream.on('error', (obj) => {
+      logger.error(obj);
+      return [];
+    });
   }
 }

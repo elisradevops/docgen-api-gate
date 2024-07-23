@@ -20,11 +20,6 @@ export class Routes {
         res.status(200).json({ bucketFileList });
       });
     });
-    app.route('/minio/bucketFileList/:bucketName/:folderName').get(async (req: Request, res: Response) => {
-      this.minioController.getBucketFileListFromFolder(req, res).then((bucketFileList) => {
-        res.status(200).json({ bucketFileList });
-      });
-    });
     app
       .route('/minio/contentFromFile/:bucketName/:folderName/:fileName')
       .get(async (req: Request, res: Response) => {
