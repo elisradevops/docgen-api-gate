@@ -46,10 +46,54 @@ export class MinioController {
       }
     });
   }
+
+  public async getBucketFileListFromFolder(req: Request, res: Response) {
+    return new Promise((resolve, reject) => {
+      let jsonReq = JSON.stringify(req.params);
+      let minioRequest: MinioRequest = JSON.parse(jsonReq);
+      logger.info(`minirequest from folder ${JSON.stringify(minioRequest)}`);
+      const s3Client = new Minio.Client({
+        endPoint: process.env.MINIO_ENDPOINT,
+        port: 9000,
+        useSSL: false,
+        accessKey: process.env.MINIO_ROOT_USER,
+        secretKey: process.env.MINIO_ROOT_PASSWORD,
+      });
+      try {
+        let objects = [];
+
+        let url = '';
+        this.standardizeRequest(minioRequest);
+        if (req.query.isExternalUrl == 'true') {
+          url = `${process.env.minioPublicEndPoint}/${minioRequest.bucketName}/${minioRequest.folderName}/`;
+        } else {
+          url = `${process.env.MINIOSERVER}/${minioRequest.bucketName}/${minioRequest.folderName}/`;
+        }
+        let stream = s3Client.listObjectsV2(minioRequest.bucketName, minioRequest.folderName, true);
+        stream.on('data', (obj) => {
+          obj.url = url + obj.name;
+          objects.push(obj);
+        });
+        stream.on('end', (obj) => {
+          return resolve(objects);
+        });
+        stream.on('error', (obj) => {
+          logger.error(obj);
+          return [];
+        });
+        return objects;
+      } catch (err) {
+        logger.error(err);
+        reject([]);
+      }
+    });
+  }
+
   public async getJSONContentFromFile(req: Request, res: Response) {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.params);
       let minioRequest: MinioRequest = JSON.parse(jsonReq);
+      logger.info(`minirequest ${JSON.stringify(minioRequest)}`);
       const s3Client = new Minio.Client({
         endPoint: process.env.MINIO_ENDPOINT,
         port: 9000,
@@ -59,25 +103,31 @@ export class MinioController {
       });
       this.standardizeRequest(minioRequest);
       let miniData = '';
-      s3Client.getObject(minioRequest.bucketName, minioRequest.fileName, (err, dataStream) => {
-        if (err) {
-          logger.error(err);
-          return reject(`error due to ${err.code} - ${err.key}`);
+
+      s3Client.getObject(
+        minioRequest.bucketName,
+        minioRequest.folderName + '/' + minioRequest.fileName,
+        (err, dataStream) => {
+          if (err) {
+            logger.error(err);
+            return reject(`error due to ${err.code} - ${err.key}`);
+          }
+          dataStream.on('data', (chunk) => {
+            miniData += chunk;
+          });
+          dataStream.on('end', () => {
+            let cleaned = String(miniData).replace(/(\r\n|\n|\r)/gm, '');
+            cleaned = String(cleaned).replace(/ /g, '');
+            const json = JSON.parse(cleaned);
+            logger.info(cleaned);
+            return resolve(json);
+          });
+          dataStream.on('error', (streamErr) => {
+            logger.error(streamErr);
+            return reject(streamErr);
+          });
         }
-        dataStream.on('data', (chunk) => {
-          miniData += chunk;
-        });
-        dataStream.on('end', () => {
-          let cleaned = String(miniData).replace(/(\r\n|\n|\r)/gm, '');
-          cleaned = String(cleaned).replace(/ /g, '');
-          const json = JSON.parse(cleaned);
-          return resolve(json);
-        });
-        dataStream.on('error', (streamErr) => {
-          logger.error(streamErr);
-          return reject(streamErr);
-        });
-      });
+      );
     });
   }
   public async createBucketIfDoesentExsist(req: Request, res: Response) {
