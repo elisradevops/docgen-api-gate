@@ -1,0 +1,11 @@
+{
+  "documentTitle": "std-document",
+  "templateFiles": ["std-template"],
+  "contentControls": [
+    {
+      "type": "test-description",
+      "title": "tests-description-content-control",
+      "skin": "test-std"
+    }
+  ]
+}
