@@ -1,0 +1,11 @@
+{
+  "documentTitle": "str-document",
+  "templateFiles": ["str-template"],
+  "contentControls": [
+    {
+      "type": "test-result-test-group-summary-table",
+      "title": "test-group-summary-content-control",
+      "skin": "test-str"
+    }
+  ]
+}
