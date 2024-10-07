@@ -26,6 +26,8 @@ class AttachmentService:
 
     async def process_attachment(self):
         try:
+            # TODO: delete this later...
+            print(self.url)
             file_name = self.url.split("/")[-1] + self.ext
             time_now = datetime.now().strftime("%Y-%m-%d")
             file_bucket_path = f"{self.project_name}/{time_now}/{file_name}"
