@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { MinioRequest } from 'models/MinioRequest';
 
 import logger from '../util/logger';
+import fs from 'fs';
+import path from 'path';
 
 var Minio = require('minio');
 
@@ -20,6 +22,67 @@ export class MinioController {
         logger.error(err);
         reject([]);
       }
+    });
+  }
+
+  public async uploadFile(req: Request, res: Response) {
+    return new Promise((resolve, reject) => {
+      // Ensure the file is provided in the request
+      if (!req.file) {
+        logger.error('No file provided');
+        return reject('No file provided');
+      }
+
+      if (req.file.mimetype !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.template') {
+        logger.error('Not a valid template');
+        return reject('No valid template');
+      }
+      const { docType, teamProjectName, isExternalUrl } = req.body;
+      // Prepare the Minio request with file and folder details
+      const minioRequest = {
+        bucketName: 'templates', // Use dynamic or environment variables as needed
+        folderName: `${teamProjectName}/${docType}`, // Use dynamic or environment variables as needed
+        fileName: req.file.originalname,
+      };
+      const s3Client = this.initS3Client();
+      let url = '';
+      this.standardizeRequest(minioRequest);
+      let suffix = `templates/${minioRequest.folderName}/${minioRequest.fileName}`;
+      if (isExternalUrl === true) {
+        url = `${process.env.minioPublicEndPoint}/${suffix}`;
+      } else {
+        url = `${process.env.MINIOSERVER}/${suffix}`;
+      }
+      // Read the uploaded file from the temporary 'uploads' directory where multer stores it
+      const filePath = path.resolve(req.file.path);
+      const fileStream = fs.createReadStream(filePath);
+      const fileStat = fs.statSync(filePath);
+      // Define the object name (file path in the Minio bucket)
+      const objectName = `${minioRequest.folderName}/${minioRequest.fileName}`;
+      // Ensure the bucket exists before uploading the file
+      s3Client
+        .bucketExists(minioRequest.bucketName)
+        .then((exists) => {
+          if (!exists) {
+            return s3Client.makeBucket(minioRequest.bucketName, process.env.MINIO_REGION);
+          }
+        })
+        .then(() => {
+          // Upload the file to Minio
+          s3Client.putObject(minioRequest.bucketName, objectName, fileStream, fileStat.size, (err, etag) => {
+            // Delete the temporary file after uploading to Minio
+            fs.unlinkSync(filePath);
+            if (err) {
+              logger.error('Error uploading file:', err);
+              return reject(err);
+            }
+            return resolve({ fileItem: { url, text: objectName } });
+          });
+        })
+        .catch((err) => {
+          logger.error(err);
+          return reject(err.message);
+        });
     });
   }
 
@@ -141,9 +204,12 @@ export class MinioController {
   private SetUrl(minioRequest: MinioRequest, req) {
     let url = '';
     this.standardizeRequest(minioRequest);
-    let folderName = req.query.docType;
-    let suffix =
-      folderName === undefined ? `${minioRequest.bucketName}/` : `${minioRequest.bucketName}/${folderName}/`;
+    let docType = req.query.docType;
+    let projectName = req.query.projectName;
+    let prefix =
+      projectName === undefined ? `${minioRequest.bucketName}` : `${minioRequest.bucketName}/${projectName}`;
+    let suffix = docType === undefined ? `${prefix}/` : `${prefix}/${docType}/`;
+    logger.info(suffix);
     if (req.query.isExternalUrl == 'true') {
       url = `${process.env.minioPublicEndPoint}/${suffix}`;
     } else {
@@ -160,14 +226,23 @@ export class MinioController {
     objects: any[],
     resolve: (value: unknown) => void
   ) {
-    let folderName = req.query.docType;
+    let docType = req.query.docType;
+    let projectName = req.query.projectName;
 
-    let stream =
-      folderName === undefined
-        ? s3Client.listObjectsV2(minioRequest.bucketName)
-        : s3Client.listObjectsV2(minioRequest.bucketName, folderName, true);
+    let stream: any = undefined;
+    if (docType === undefined) {
+      stream = s3Client.listObjectsV2(minioRequest.bucketName);
+    } else {
+      stream =
+        projectName === undefined
+          ? s3Client.listObjectsV2(minioRequest.bucketName, docType, true)
+          : s3Client.listObjectsV2(minioRequest.bucketName, `${projectName}/${docType}`, true);
+    }
+
     stream.on('data', (obj) => {
-      obj.url = url + obj.name;
+      logger.info(JSON.stringify(obj));
+      const fileName = obj.name?.includes('/') ? obj.name.split('/').pop() : obj.name;
+      obj.url = url + fileName;
       objects.push(obj);
     });
     stream.on('end', (obj) => {

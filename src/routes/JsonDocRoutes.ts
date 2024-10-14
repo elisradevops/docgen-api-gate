@@ -7,7 +7,7 @@ export class Routes {
   public documentsGeneratorController: DocumentsGeneratorController = new DocumentsGeneratorController();
   public minioController: MinioController = new MinioController();
 
-  public routes(app: any): void {
+  public routes(app: any, upload: any): void {
     app.route('/jsonDocument').get((req: Request, res: Response) => {
       res.status(200).json({ status: 'online - ' + moment().format() });
     });
@@ -15,6 +15,24 @@ export class Routes {
       let documentUrl = await this.documentsGeneratorController.createJSONDoc(req, res);
       res.status(200).json({ documentUrl });
     });
+    // Add the file upload route for template uploading
+    app
+      .route('/minio/templates/uploadTemplate')
+      .post(upload.single('file'), async (req: Request, res: Response) => {
+        // Call the uploadFile method from MinioController
+        if (!req.file) {
+          return res.status(400).json({ message: 'No file uploaded' });
+        }
+        this.minioController
+          .uploadFile(req, res)
+          .then((response: any) => {
+            const { fileItem } = response;
+            res.status(200).json({ message: 'File uploaded successfully', fileItem });
+          })
+          .catch((err) => {
+            res.status(500).json({ message: `File upload failed: ${err.message}`, error: err });
+          });
+      });
     app.route('/minio/bucketFileList/:bucketName').get(async (req: Request, res: Response) => {
       this.minioController.getBucketFileList(req, res).then((bucketFileList) => {
         res.status(200).json({ bucketFileList });
