@@ -7,7 +7,7 @@ sleep 20
 ./mc mb doc-gen-minio/templates
 ./mc policy set public doc-gen-minio/templates
 # load templates
-./mc cp ./assets/templates/* doc-gen-minio/templates
+./mc cp --recursive ./assets/templates/ doc-gen-minio/templates/
 
 # check and  setup bucket document-forms
 ./mc mb doc-gen-minio/document-forms
