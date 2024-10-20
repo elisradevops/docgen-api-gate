@@ -12,8 +12,18 @@ export class Routes {
       res.status(200).json({ status: 'online - ' + moment().format() });
     });
     app.route('/jsonDocument/create').post(async (req: Request, res: Response) => {
-      let documentUrl = await this.documentsGeneratorController.createJSONDoc(req, res);
-      res.status(200).json({ documentUrl });
+      this.documentsGeneratorController
+        .createJSONDoc(req, res)
+        .then((documentUrl) => {
+          res.status(200).json({ documentUrl });
+        })
+        .catch((err) => {
+          res.status(500).json({
+            message: `Failed to create the document ${err}`,
+            //Error not structured correctly
+            error: err,
+          });
+        });
     });
     // Add the file upload route for template uploading
     app
@@ -30,13 +40,20 @@ export class Routes {
             res.status(200).json({ message: 'File uploaded successfully', fileItem });
           })
           .catch((err) => {
-            res.status(500).json({ message: `File upload failed: ${err.message}`, error: err });
+            res.status(500).json({ message: `File upload failed: ${err}`, error: err });
           });
       });
     app.route('/minio/bucketFileList/:bucketName').get(async (req: Request, res: Response) => {
-      this.minioController.getBucketFileList(req, res).then((bucketFileList) => {
-        res.status(200).json({ bucketFileList });
-      });
+      this.minioController
+        .getBucketFileList(req, res)
+        .then((bucketFileList) => {
+          res.status(200).json({ bucketFileList });
+        })
+        .catch((err) => {
+          res
+            .status(500)
+            .json({ message: `Error Occurred while fetching files from bucket: ${err}`, error: err });
+        });
     });
     app
       .route('/minio/contentFromFile/:bucketName/:folderName/:fileName')

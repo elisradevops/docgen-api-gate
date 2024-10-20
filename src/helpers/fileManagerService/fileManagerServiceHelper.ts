@@ -1,26 +1,22 @@
-import axios from "axios";
-import logger from "../../util/logger";
-const moment = require("moment");
+import axios from 'axios';
+import logger from '../../util/logger';
+const moment = require('moment');
 export class FileManagerServiceHelper {
-  async perpareTemplateFile(
-    url: string,
-    ParentSpanHeaders: any
-  ): Promise<string> {
+  async perpareTemplateFile(url: string, ParentSpanHeaders: any): Promise<string> {
     try {
       let headers = ParentSpanHeaders;
-      logger.debug(url);
       let res = await axios.post(
         `${process.env.MINIO_CLIENT_URL}/minio/downloadFile/sharedDirectory`,
         {
           url,
-          prefix: moment().format("DD-MM-YYYY-hh-mm"),
+          prefix: moment().format('DD-MM-YYYY-hh-mm'),
         },
         { headers }
       );
       return res.data.data.fullFilePath;
     } catch (err) {
       logger.error(err);
-      throw new Error("Error downloading template");
+      throw new Error('Error downloading template');
     }
   } //createWordObject
   async uploadDocument(
@@ -31,11 +27,7 @@ export class FileManagerServiceHelper {
   ): Promise<string> {
     try {
       let headers = ParentSpanHeaders;
-      logger.debug(`UploadingFile with : 
-      bucketName: ${bucketName}
-      fileName: ${fileName}
-      filePath: ${filePath}
-      `);
+
       let res = await axios.post(
         `${process.env.MINIO_CLIENT_URL}/minio/uploadFile`,
         {
@@ -55,20 +47,14 @@ export class FileManagerServiceHelper {
       path: ${path}
       toOS: ${toOS}`);
     switch (toOS) {
-      case "windows":
+      case 'windows':
         return path
-          .replace(
-            process.env.DOCUMENTROOTDIR,
-            process.env.DOCUMENTROOTDIR_WINDOWS_PATH
-          )
-          .replace("/", "\\");
-      case "linux":
+          .replace(process.env.DOCUMENTROOTDIR, process.env.DOCUMENTROOTDIR_WINDOWS_PATH)
+          .replace('/', '\\');
+      case 'linux':
         return path
-          .replace(
-            process.env.DOCUMENTROOTDIR_WINDOWS_PATH,
-            process.env.DOCUMENTROOTDIR
-          )
-          .replace("\\", "/");
+          .replace(process.env.DOCUMENTROOTDIR_WINDOWS_PATH, process.env.DOCUMENTROOTDIR)
+          .replace('\\', '/');
     }
   } //replaceWindowsAndLinuxPaths
 }
