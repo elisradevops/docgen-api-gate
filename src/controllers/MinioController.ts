@@ -20,7 +20,7 @@ export class MinioController {
         return objects;
       } catch (err) {
         logger.error(err);
-        reject([]);
+        reject(err.message);
       }
     });
   }
@@ -35,7 +35,7 @@ export class MinioController {
 
       if (req.file.mimetype !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.template') {
         logger.error('Not a valid template');
-        return reject('No valid template');
+        return reject('Not a valid template. Only *.dotx files are allowed');
       }
       const { docType, teamProjectName, isExternalUrl } = req.body;
       // Prepare the Minio request with file and folder details
@@ -209,7 +209,6 @@ export class MinioController {
     let prefix =
       projectName === undefined ? `${minioRequest.bucketName}` : `${minioRequest.bucketName}/${projectName}`;
     let suffix = docType === undefined ? `${prefix}/` : `${prefix}/${docType}/`;
-    logger.info(suffix);
     if (req.query.isExternalUrl == 'true') {
       url = `${process.env.minioPublicEndPoint}/${suffix}`;
     } else {
@@ -240,7 +239,6 @@ export class MinioController {
     }
 
     stream.on('data', (obj) => {
-      logger.info(JSON.stringify(obj));
       const fileName = obj.name?.includes('/') ? obj.name.split('/').pop() : obj.name;
       obj.url = url + fileName;
       objects.push(obj);
