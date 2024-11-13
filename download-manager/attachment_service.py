@@ -6,6 +6,7 @@ import requests
 import base64
 from datetime import datetime
 from PIL import Image
+import uuid
 
 
 class AttachmentService:
@@ -26,9 +27,9 @@ class AttachmentService:
 
     async def process_attachment(self):
         try:
-            # TODO: delete this later...
-            print(self.url)
-            file_name = self.url.split("/")[-1] + self.ext
+            # Generate a unique UUID for the file name
+            file_base_name = str(uuid.uuid4())
+            file_name = file_base_name + self.ext
             time_now = datetime.now().strftime("%Y-%m-%d")
             file_bucket_path = f"{self.project_name}/{time_now}/{file_name}"
             value = {}
@@ -55,7 +56,7 @@ class AttachmentService:
                 )
                 if self.ext.lower() in self.image_extensions:
                     image = Image.open(file_name)
-                    thumbnail_name = self.url.split("/")[-1] + "-thumbnail" + self.ext
+                    thumbnail_name = file_base_name + "-thumbnail" + self.ext
                     thumbnail_file_path = f"{self.project_name}/{time_now}/{thumbnail_name}"
                     thumbnail_image = image.resize((256, 256))
                     thumbnail_image.save(thumbnail_name)
@@ -83,7 +84,6 @@ class AttachmentService:
                 "attachmentPath": full_download_path,
                 "fileName": file_name
             }
-        print(value)
         sys.stdout.flush()
         return value
 
