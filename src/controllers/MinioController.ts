@@ -227,10 +227,14 @@ export class MinioController {
   ) {
     let docType = req.query.docType;
     let projectName = req.query.projectName;
+    let recurse: boolean = req.query.recurse === 'true';
 
     let stream: any = undefined;
+    // If no docType is provided, list all objects in the bucket
     if (docType === undefined) {
-      stream = s3Client.listObjectsV2(minioRequest.bucketName);
+      stream = !recurse
+        ? s3Client.listObjectsV2(minioRequest.bucketName)
+        : s3Client.listObjectsV2(minioRequest.bucketName, !projectName ? 'shared' : `${projectName}`, true);
     } else {
       stream =
         projectName === undefined
@@ -239,7 +243,7 @@ export class MinioController {
     }
 
     stream.on('data', (obj) => {
-      const fileName = obj.name?.includes('/') ? obj.name.split('/').pop() : obj.name;
+      const fileName = obj.name?.includes('/') && !recurse ? obj.name.split('/').pop() : obj.name;
       obj.url = url + fileName;
       objects.push(obj);
     });
