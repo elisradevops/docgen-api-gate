@@ -13,15 +13,21 @@ try:
     async def home():
         json = request.get_json()
         try:
+            # Extract base64 related fields if present
+            is_base64 = json.get('isBase64', False)
+            base64_content = json.get('base64Content', None)
+            
             attachment_service = AttachmentService(
                 json['bucketName'],
                 json['minioEndPoint'],
                 json['minioAccessKey'],
                 json['minioSecretKey'],
-                json['downloadUrl'],
+                json.get('downloadUrl', ''),  # Make downloadUrl optional
                 json['fileExtension'],
                 json['projectName'],
-                json['token']
+                json['token'],
+                is_base64=is_base64,
+                base64_chunks=base64_content
             )
             res = await attachment_service.process_attachment()
         except S3Error as exc:

@@ -11,7 +11,7 @@ import uuid
 
 
 class AttachmentService:
-    def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name,token):
+    def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name, token, is_base64=False, base64_chunks=None):
         self.bucket_name = bucket_name
         self.minio_end_point = minio_end_point
         self.minio_access_key = minio_access_key
@@ -25,6 +25,22 @@ class AttachmentService:
           'Authorization': 'Basic '+self.authorization
         }
         self.image_extensions = [".jpg", ".jpeg", ".png", ".ico", ".im", ".pcx", ".tga", ".tiff"]
+        self.is_base64 = is_base64
+        self.base64_chunks = base64_chunks
+
+    def _process_base64_chunks(self, file_name):
+        """Reassemble and save base64 chunks to file"""
+        try:
+            # Combine all chunks
+            complete_base64 = ''.join(self.base64_chunks)
+            
+            # Decode and write to file
+            with open(file_name, 'wb') as f:
+                f.write(base64.b64decode(complete_base64))
+            return True
+        except Exception as e:
+            print(f"Error processing base64 chunks: {str(e)}")
+            return False
 
     async def process_attachment(self):
         try:
@@ -32,24 +48,28 @@ class AttachmentService:
             file_base_name = str(uuid.uuid4())  # random UUID
             file_name = file_base_name + self.ext
 
-            # 2) Check if self.url is base64 (data:...) or normal URL
-            is_base64_data = self.url.startswith("data:")
-            if is_base64_data:
-                # Parse out base64
-                # e.g. data:image/png;base64,iVBORw0KGgoAAAANSUhEUg...
-                match = re.match(r'^data:(.*?);base64,(.*)$', self.url)
-                if not match:
-                    # Not properly formed data URL -> treat as invalid
+            # 2) Process either base64 chunks or URL
+            if self.is_base64 and self.base64_chunks:
+                if not self._process_base64_chunks(file_name):
                     return self._return_bad_attachment()
-
-                base64_data = match.group(2)
-                with open(file_name, 'wb') as f:
-                    f.write(base64.b64decode(base64_data))
             else:
-                # Normal URL -> Download from Azure DevOps or wherever
-                azure_response = requests.get(self.url + "?download=true", headers=self.headers)
-                with open(file_name, 'wb') as f:
-                    f.write(azure_response.content)
+                # Handle URL download as before
+                if self.url.startswith("data:"):
+                    # Parse out base64
+                    # e.g. data:image/png;base64,iVBORw0KGgoAAAANSUhEUg...
+                    match = re.match(r'^data:(.*?);base64,(.*)$', self.url)
+                    if not match:
+                        # Not properly formed data URL -> treat as invalid
+                        return self._return_bad_attachment()
+
+                    base64_data = match.group(2)
+                    with open(file_name, 'wb') as f:
+                        f.write(base64.b64decode(base64_data))
+                else:
+                    # Normal URL -> Download from Azure DevOps or wherever
+                    azure_response = requests.get(self.url + "?download=true", headers=self.headers)
+                    with open(file_name, 'wb') as f:
+                        f.write(azure_response.content)
 
             # 3) Check file size
             if os.stat(file_name).st_size == 0:
@@ -105,7 +125,8 @@ class AttachmentService:
             # Remove local file after uploading
             os.remove(file_name)
 
-        except:
+        except Exception as e:
+            print(f"Error in process_attachment: {str(e)}")
             return self._return_bad_attachment()
 
         sys.stdout.flush()
