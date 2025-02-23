@@ -71,9 +71,12 @@ export class DocumentsGeneratorController {
           );
           return resolve(documentUrl.data);
         } catch (err) {
-          const responseError = err.response.data;
-          // Pass the full error object for more details, including stack trace
-          throw new Error(responseError.message);
+          if (err.response) {
+            const responseError = err.response.data;
+            // Pass the full error object for more details, including stack trace
+            throw new Error(responseError.message);
+          }
+          throw err;
         }
       } catch (err) {
         return reject(err.message);
