@@ -86,6 +86,51 @@ export class MinioController {
     });
   }
 
+  public async deleteFile(req: Request, res: Response) {
+    return new Promise((resolve, reject) => {
+      // Remove any surrounding quotes from the target etag
+      const targetEtag = req.params.etag.replace(/^"|"$/g, '');
+      const targetProject = req.params.projectName || '';
+      if (targetProject === 'shared') {
+        throw new Error('Cannot delete shared templates');
+      }
+      logger.debug(`Deleting file with etag: ${targetEtag} from project ${targetProject}`);
+      const bucketName = 'templates';
+      const s3Client = this.initS3Client();
+      let foundKey: string | null = null;
+
+      const stream = s3Client.listObjectsV2(bucketName, targetProject, true);
+      stream.on('data', (obj) => {
+        // Clean the etag of the current object (remove surrounding quotes if any)
+        const objEtag = obj.etag || '';
+
+        // Compare the normalized etags
+        if (objEtag && objEtag === targetEtag) {
+          logger.info(`Found matching object: ${obj.name} with etag ${objEtag}`);
+          foundKey = obj.name;
+        }
+      });
+      stream.on('end', () => {
+        if (foundKey) {
+          s3Client.removeObject(bucketName, foundKey, (err) => {
+            if (err) {
+              logger.error(`Error deleting file ${foundKey}:`, err);
+              return reject(err.message);
+            }
+            return resolve(`File ${foundKey} deleted successfully from ${bucketName}`);
+          });
+        } else {
+          logger.error(`No object found with etag: ${targetEtag}`);
+          return reject(`File with etag ${req.params.etag} not found`);
+        }
+      });
+      stream.on('error', (err) => {
+        logger.error(err);
+        return reject(err.message);
+      });
+    });
+  }
+
   public async getJSONContentFromFile(req: Request, res: Response) {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.params);

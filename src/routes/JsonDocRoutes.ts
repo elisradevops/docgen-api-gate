@@ -43,6 +43,20 @@ export class Routes {
             res.status(500).json({ message: `File upload failed: ${err}`, error: err });
           });
       });
+
+    app
+      .route(`/minio/templates/deleteTemplate/:projectName/:etag`)
+      .delete(async (req: Request, res: Response) => {
+        this.minioController
+          .deleteFile(req, res)
+          .then((response) => {
+            res.status(200).json({ response });
+          })
+          .catch((err) => {
+            res.status(500).json({ message: `Failed to delete the file: ${err}`, error: err });
+          });
+      });
+
     app.route('/minio/bucketFileList/:bucketName').get(async (req: Request, res: Response) => {
       this.minioController
         .getBucketFileList(req, res)
