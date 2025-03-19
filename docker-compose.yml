@@ -1,51 +1,66 @@
-version: "3.9"
+version: '3.9'
 
 x-common-variables: &common-vars
-  MINIOSERVER: "http://s3:9000"
-  MINIO_ROOT_USER: "your-root-user"
-  MINIO_ROOT_PASSWORD: "your-root-password"
-  MINIO_REGION: "ap-southeast-1"
+  MINIOSERVER: 'http://s3:9000'
+  MINIO_ROOT_USER: 'your-root-user'
+  MINIO_ROOT_PASSWORD: 'your-root-password'
+  MINIO_REGION: 'ap-southeast-1'
 services:
   dg-fe:
     image: elisradevops/docgen-frontend:latest
     ports:
-      - "80:80"
+      - '80:80'
     environment:
-      BACKEND-URL-PLACEHOLDER-ContentControl: "http://dg-api-gate:3001"
+      BACKEND-URL-PLACEHOLDER-ContentControl: 'http://dg-api-gate:3001'
   dg-api-gate:
     build: .
     command: npm run dev
     volumes:
       - ./:/usr/src/app
     ports:
-      - "3001:3000"
+      - '3001:3000'
     environment:
       <<: *common-vars
-      MINIO_ENDPOINT: "s3"
-      dgContentControlUrl: "http://dg-content-control:3000"
-      jsonToWordPostUrl: "http://json-to-word:5000"
-      minioPublicEndPoint: "http://localhost:9000"
+      MINIO_ENDPOINT: 's3'
+      dgContentControlUrl: 'http://dg-content-control:3000'
+      jsonToWordPostUrl: 'http://json-to-word:5000'
+      minioPublicEndPoint: 'http://localhost:9000'
+      MONGODB_URI: 'mongodb://root:example@mongodb:27017/docgen?authSource=admin'
+    depends_on:
+      - mongodb
+  mongodb:
+    image: elisradevops/docgen-mongodb:latest
+    ports:
+      - '27017:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+      MONGO_INITDB_DATABASE: docgen
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    command: mongod --config /etc/mongod.conf
   dg-init-job:
     image: elisradevops/docgen-initializer:latest
     depends_on:
-      - "s3"
+      - 's3'
     environment:
       <<: *common-vars
-      MINIOROOTUSER: "your-root-user"
-      MINIOROOTPASSWORD: "your-root-password"
+      MINIOROOTUSER: 'your-root-user'
+      MINIOROOTPASSWORD: 'your-root-password'
   dg-content-control:
     image: elisradevops/docgen-content-control:latest
     ports:
-      - "3000:3000"
+      - '3000:3000'
   json-to-word:
     image: assafushy/json-to-word:latest
     ports:
-      - "5000:5000"
+      - '5000:5000'
   s3:
     image: minio/minio
     ports:
-      - "9000:9000"
-      - "4000:4000"
+      - '9000:9000'
+      - '4000:4000'
     volumes:
       - ./minio:/data
     environment:
@@ -54,4 +69,6 @@ services:
   python-download-service:
     image: elisradevops/docgen-download-manager:latest
     ports:
-      - "8000:8000"
+      - '8000:8000'
+volumes:
+  mongodb_data:
