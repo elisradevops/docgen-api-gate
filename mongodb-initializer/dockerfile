@@ -1,0 +1,10 @@
+FROM mongo:latest
+
+# Copy configuration file
+COPY mongod.conf /etc/mongod.conf
+
+# Copy initialization scripts
+COPY ./init-scripts/ /docker-entrypoint-initdb.d/
+
+# Set permissions if needed
+RUN chmod 644 /etc/mongod.conf
