@@ -1,0 +1,11 @@
+{
+  "documentTitle": "test-reporter",
+  "templateFiles": ["test-reporter-template"],
+  "contentControls": [
+    {
+      "type": "test-reporter",
+      "title": "tests-reporter-content-control",
+      "skin": "test-reporter"
+    }
+  ]
+}

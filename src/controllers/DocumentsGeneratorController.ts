@@ -64,9 +64,14 @@ export class DocumentsGeneratorController {
               );
             }
           });
+
           // Generate the final document
+          const isExcelSpreadsheet = contentControls.some(
+            (contentControl) => contentControl.isExcelSpreadsheet
+          );
+
           let documentUrl: any = await axios.post(
-            `${process.env.jsonToWordPostUrl}/api/word/create`,
+            `${process.env.jsonToWordPostUrl}/api/${!isExcelSpreadsheet ? 'word' : 'excel'}/create`,
             docTemplate
           );
           return resolve(documentUrl.data);

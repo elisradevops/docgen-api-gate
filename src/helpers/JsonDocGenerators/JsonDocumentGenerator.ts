@@ -25,6 +25,7 @@ export class JSONDocumentGenerator {
                 type: contentControl.type,
                 headingLevel: contentControl.headingLevel,
                 data: contentControl.data,
+                isExcelSpreadsheet: contentControl.isExcelSpreadsheet || false,
               },
             }
           );
