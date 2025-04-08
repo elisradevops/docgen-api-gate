@@ -10,13 +10,12 @@ export interface DocumentRequest {
   userEmail: string;
 }
 export interface UploadProperties {
-  bucketName: string,
-  fileName: string,
-  AwsAccessKeyId: string,
-  AwsSecretAccessKey: string,
-  Region: string,
-  ServiceUrl: string
-
+  bucketName: string;
+  fileName: string;
+  AwsAccessKeyId: string;
+  AwsSecretAccessKey: string;
+  Region: string;
+  ServiceUrl: string;
 }
 export interface ContentControl {
   title: string;
@@ -24,6 +23,7 @@ export interface ContentControl {
   skin: string;
   headingLevel: number;
   data: DataDescriptor;
+  isExcelSpreadsheet: boolean;
 }
 
 export interface DataDescriptor {
