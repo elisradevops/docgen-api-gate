@@ -13,7 +13,7 @@ export class FileManagerServiceHelper {
         },
         { headers }
       );
-      return res.data.data.fullFilePath;
+      return res.data.url;
     } catch (err) {
       logger.error(err);
       throw new Error('Error downloading template');
@@ -37,7 +37,7 @@ export class FileManagerServiceHelper {
         },
         { headers }
       );
-      return res.data;
+      return res.data.filePath;
     } catch (err) {
       logger.error(err.response.data);
     }

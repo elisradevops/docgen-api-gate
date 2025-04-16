@@ -2,7 +2,9 @@ FROM ubuntu:20.04
 WORKDIR /usr/app
 COPY . . 
 
-RUN chmod 777 s3-init.sh
+RUN apt-get update && apt-get install -y dos2unix bash
+RUN dos2unix s3-init.sh
+RUN chmod +x s3-init.sh
 RUN chmod 777 mc
 
-CMD ["./s3-init.sh"]
+CMD ["/bin/bash", "/usr/app/s3-init.sh"]
