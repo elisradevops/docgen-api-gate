@@ -33,21 +33,25 @@ export class MinioController {
         return reject('No file provided');
       }
 
-      if (req.file.mimetype !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.template') {
+      const { docType, teamProjectName, isExternalUrl, bucketName } = req.body;
+
+      if (
+        bucketName === 'templates' &&
+        req.file.mimetype !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.template'
+      ) {
         logger.error('Not a valid template');
         return reject('Not a valid template. Only *.dotx files are allowed');
       }
-      const { docType, teamProjectName, isExternalUrl } = req.body;
       // Prepare the Minio request with file and folder details
       const minioRequest = {
-        bucketName: 'templates', // Use dynamic or environment variables as needed
+        bucketName: bucketName, // Use dynamic or environment variables as needed
         folderName: `${teamProjectName}/${docType}`, // Use dynamic or environment variables as needed
         fileName: req.file.originalname,
       };
       const s3Client = this.initS3Client();
       let url = '';
       this.standardizeRequest(minioRequest);
-      let suffix = `templates/${minioRequest.folderName}/${minioRequest.fileName}`;
+      let suffix = `${bucketName}/${minioRequest.folderName}/${minioRequest.fileName}`;
       if (isExternalUrl === true) {
         url = `${process.env.minioPublicEndPoint}/${suffix}`;
       } else {
@@ -76,7 +80,7 @@ export class MinioController {
               logger.error('Error uploading file:', err);
               return reject(err);
             }
-            return resolve({ fileItem: { url, text: objectName } });
+            return resolve({ fileItem: { url, text: objectName, etag: etag?.etag || undefined } });
           });
         })
         .catch((err) => {
@@ -95,7 +99,7 @@ export class MinioController {
         throw new Error('Cannot delete shared templates');
       }
       logger.debug(`Deleting file with etag: ${targetEtag} from project ${targetProject}`);
-      const bucketName = 'templates';
+      const bucketName = req.params.bucketName || 'templates';
       const s3Client = this.initS3Client();
       let foundKey: string | null = null;
 

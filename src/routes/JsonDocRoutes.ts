@@ -27,26 +27,24 @@ export class Routes {
         });
     });
     // Add the file upload route for template uploading
-    app
-      .route('/minio/templates/uploadTemplate')
-      .post(upload.single('file'), async (req: Request, res: Response) => {
-        // Call the uploadFile method from MinioController
-        if (!req.file) {
-          return res.status(400).json({ message: 'No file uploaded' });
-        }
-        this.minioController
-          .uploadFile(req, res)
-          .then((response: any) => {
-            const { fileItem } = response;
-            res.status(200).json({ message: 'File uploaded successfully', fileItem });
-          })
-          .catch((err) => {
-            res.status(500).json({ message: `File upload failed: ${err}`, error: err });
-          });
-      });
+    app.route('/minio/files/uploadFile').post(upload.single('file'), async (req: Request, res: Response) => {
+      // Call the uploadFile method from MinioController
+      if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+      }
+      this.minioController
+        .uploadFile(req, res)
+        .then((response: any) => {
+          const { fileItem } = response;
+          res.status(200).json({ message: 'File uploaded successfully', fileItem });
+        })
+        .catch((err) => {
+          res.status(500).json({ message: `File upload failed: ${err}`, error: err });
+        });
+    });
 
     app
-      .route(`/minio/templates/deleteTemplate/:projectName/:etag`)
+      .route(`/minio/files/deleteFile/:bucketName/:projectName/:etag`)
       .delete(async (req: Request, res: Response) => {
         this.minioController
           .deleteFile(req, res)
