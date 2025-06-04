@@ -11,6 +11,7 @@ interface IFavorite extends Document {
   name: string;
   docType: string;
   dataToSave: any;
+  teamProjectId: string;
 }
 
 // Create the Favorite schema
@@ -25,7 +26,7 @@ const FavoriteSchema = new Schema({
 });
 
 // Create compound index on userId, docType, and name
-FavoriteSchema.index({ userId: 1, docType: 1, name: 1 }, { unique: true });
+FavoriteSchema.index({ userId: 1, docType: 1, name: 1, teamProjectId: 1 }, { unique: true });
 
 // Create the model
 const Favorite = mongoose.model<IFavorite>('Favorite', FavoriteSchema);
