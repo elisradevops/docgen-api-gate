@@ -277,6 +277,7 @@ export class MinioController {
     let docType = req.query.docType;
     let projectName = req.query.projectName;
     let recurse: boolean = req.query.recurse === 'true';
+    const metadataPromises: Promise<void>[] = [];
 
     let stream: any = undefined;
     // If no docType is provided, list all objects in the bucket
@@ -294,14 +295,35 @@ export class MinioController {
     stream.on('data', (obj) => {
       const fileName = obj.name?.includes('/') && !recurse ? obj.name.split('/').pop() : obj.name;
       obj.url = url + fileName;
-      objects.push(obj);
+
+      // Create a promise for each metadata fetch operation
+      const metadataPromise = (async () => {
+        try {
+          const stat = await s3Client.statObject(minioRequest.bucketName, obj.name);
+          obj.createdBy = stat.metaData['createdBy'] || stat.metaData['createdby'] || '';
+        } catch (error) {
+          logger.error(`Error fetching metadata for ${obj.name}:`, error);
+          obj.createdBy = '';
+        }
+        objects.push(obj);
+      })();
+
+      metadataPromises.push(metadataPromise);
     });
-    stream.on('end', (obj) => {
-      return resolve(objects);
+
+    stream.on('end', async () => {
+      try {
+        await Promise.all(metadataPromises);
+        resolve(objects);
+      } catch (error) {
+        logger.error('Error processing metadata:', error);
+        resolve([]);
+      }
     });
-    stream.on('error', (obj) => {
-      logger.error(obj);
-      return [];
+
+    stream.on('error', (err) => {
+      logger.error('Stream error:', err);
+      resolve([]);
     });
   }
 }
