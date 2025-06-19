@@ -299,8 +299,10 @@ export class MinioController {
       // Create a promise for each metadata fetch operation
       const metadataPromise = (async () => {
         try {
-          const stat = await s3Client.statObject(minioRequest.bucketName, obj.name);
-          obj.createdBy = stat.metaData['createdBy'] || stat.metaData['createdby'] || '';
+          if (obj?.name) {
+            const stat = await s3Client.statObject(minioRequest.bucketName, obj.name);
+            obj.createdBy = stat.metaData['createdBy'] || stat.metaData['createdby'] || '';
+          }
         } catch (error) {
           logger.error(`Error fetching metadata for ${obj.name}:`, error);
           obj.createdBy = '';
