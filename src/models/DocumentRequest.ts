@@ -16,6 +16,7 @@ export interface UploadProperties {
   AwsSecretAccessKey: string;
   Region: string;
   ServiceUrl: string;
+  EnableDirectDownload: boolean;
 }
 export interface ContentControl {
   title: string;
@@ -38,6 +39,7 @@ export interface DataDescriptor {
   branchName?: string;
   linkTypeFilterArray?: string[];
   includeAttachments?: boolean;
+  requestedByBuild?: boolean;
 }
 
 export enum RequirementsTraceabilityMode {
