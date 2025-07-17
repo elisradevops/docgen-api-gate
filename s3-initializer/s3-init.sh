@@ -6,13 +6,16 @@ sleep 20
 # check and  setup bucket templates
 ./mc mb doc-gen-minio/templates
 ./mc policy set public doc-gen-minio/templates
+# remove existing files from templates bucket (only inside shared folder)
+./mc rm --recursive --force doc-gen-minio/templates/shared/
 # load templates
 ./mc cp --recursive ./assets/templates/ doc-gen-minio/templates/
 
 # check and  setup bucket document-forms
 ./mc mb doc-gen-minio/document-forms
 ./mc policy set public doc-gen-minio/document-forms
-
+# remove existing files from document-forms bucket
+./mc rm --recursive --force doc-gen-minio/document-forms/
 #load form-templates
 ./mc cp --recursive ./assets/document-forms/ doc-gen-minio/document-forms/
 
