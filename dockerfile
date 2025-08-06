@@ -4,7 +4,7 @@ WORKDIR /usr/src/app
 
 COPY . ./
 
-RUN npm install
+RUN npm ci
 RUN npm install typescript -g
 RUN npm run build
 
@@ -13,7 +13,7 @@ FROM  node:slim
 WORKDIR /usr/src/app
 
 COPY --from=build /usr/src/app/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY --from=build /usr/src/app/bin /usr/src/app
 
