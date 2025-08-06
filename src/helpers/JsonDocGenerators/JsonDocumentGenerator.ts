@@ -27,6 +27,7 @@ export class JSONDocumentGenerator {
                 data: contentControl.data,
                 isExcelSpreadsheet: contentControl.isExcelSpreadsheet || false,
               },
+              formattingSettings: documentRequest.formattingSettings,
             }
           );
           return contentControlResponse.data;

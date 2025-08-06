@@ -47,6 +47,7 @@ export class DocumentsGeneratorController {
               minioAccessKey: documentRequest.uploadProperties.AwsAccessKeyId,
               minioSecretKey: documentRequest.uploadProperties.AwsSecretAccessKey,
               attachmentsBucketName: 'attachments',
+              formattingSettings: documentRequest.formattingSettings,
             }
           );
 
@@ -64,6 +65,7 @@ export class DocumentsGeneratorController {
               );
             }
           });
+          docTemplate.formattingSettings = documentRequest.formattingSettings;
 
           // Generate the final document
           const isExcelSpreadsheet = contentControls.some(

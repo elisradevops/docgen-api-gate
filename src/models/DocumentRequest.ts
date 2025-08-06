@@ -8,6 +8,7 @@ export interface DocumentRequest {
   contentControls: ContentControl[];
   vcrmQueryId: string;
   userEmail: string;
+  formattingSettings: FormattingSettings;
 }
 export interface UploadProperties {
   bucketName: string;
@@ -26,7 +27,10 @@ export interface ContentControl {
   data: DataDescriptor;
   isExcelSpreadsheet: boolean;
 }
-
+export interface FormattingSettings {
+  trimAdditionalSpacingInDescriptions: boolean;
+  trimAdditionalSpacingInTables: boolean;
+}
 export interface DataDescriptor {
   type: string;
   queryId?: string;
