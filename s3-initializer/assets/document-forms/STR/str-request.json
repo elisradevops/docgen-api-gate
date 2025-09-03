@@ -7,5 +7,6 @@
       "title": "test-group-summary-content-control",
       "skin": "test-str"
     }
-  ]
+  ],
+  "tabIndex": 1
 }

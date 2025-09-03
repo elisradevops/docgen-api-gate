@@ -7,5 +7,6 @@
       "title": "tests-reporter-content-control",
       "skin": "test-reporter"
     }
-  ]
+  ],
+  "tabIndex": 4
 }

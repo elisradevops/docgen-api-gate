@@ -1,0 +1,12 @@
+{
+  "documentTitle": "srs-document",
+  "templateFiles": ["srs-template"],
+  "contentControls": [
+    {
+      "type": "srs-document",
+      "title": "srs-document-content-control",
+      "skin": "srs-skin"
+    }
+  ],
+  "tabIndex": 3
+}

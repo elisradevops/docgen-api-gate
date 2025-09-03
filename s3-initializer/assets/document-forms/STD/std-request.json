@@ -7,5 +7,6 @@
       "title": "tests-description-content-control",
       "skin": "test-std"
     }
-  ]
+  ],
+  "tabIndex": 0
 }
