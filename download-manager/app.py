@@ -16,6 +16,7 @@ try:
             # Extract base64 related fields if present
             is_base64 = json.get('isBase64', False)
             base64_content = json.get('base64Content', None)
+            allow_insecure_ssl = json.get('allowInsecureSSL', None)
             
             attachment_service = AttachmentService(
                 json['bucketName'],
@@ -27,7 +28,8 @@ try:
                 json['projectName'],
                 json['token'],
                 is_base64=is_base64,
-                base64_chunks=base64_content
+                base64_chunks=base64_content,
+                allow_insecure_ssl=allow_insecure_ssl
             )
             res = await attachment_service.process_attachment()
         except S3Error as exc:
