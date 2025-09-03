@@ -11,7 +11,7 @@ import uuid
 
 
 class AttachmentService:
-    def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name, token, is_base64=False, base64_chunks=None):
+    def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name, token, is_base64=False, base64_chunks=None, allow_insecure_ssl=None):
         self.bucket_name = bucket_name
         self.minio_end_point = minio_end_point
         self.minio_access_key = minio_access_key
@@ -27,6 +27,24 @@ class AttachmentService:
         self.image_extensions = [".jpg", ".jpeg", ".png", ".ico", ".im", ".pcx", ".tga", ".tiff"]
         self.is_base64 = is_base64
         self.base64_chunks = base64_chunks
+        # Configure SSL verification for outbound HTTPS downloads
+        # Precedence:
+        #   1) allow_insecure_ssl (per-request override)
+        #   2) DOWNLOAD_CA_BUNDLE env var (path to PEM bundle)
+        #   3) ALLOW_INSECURE_SSL env var (global opt-out)
+        #   4) Default: True (verify enabled)
+        ca_bundle = os.getenv('DOWNLOAD_CA_BUNDLE', '').strip()
+        env_allow_insecure = os.getenv('ALLOW_INSECURE_SSL', '').strip().lower() in ('1', 'true', 'yes')
+        if allow_insecure_ssl is True:
+            self.requests_verify = False
+        elif allow_insecure_ssl is False:
+            self.requests_verify = True
+        elif ca_bundle:
+            self.requests_verify = ca_bundle
+        elif env_allow_insecure:
+            self.requests_verify = False
+        else:
+            self.requests_verify = True
 
     def _process_base64_chunks(self, file_name):
         """Reassemble and save base64 chunks to file"""
@@ -67,7 +85,11 @@ class AttachmentService:
                         f.write(base64.b64decode(base64_data))
                 else:
                     # Normal URL -> Download from Azure DevOps or wherever
-                    azure_response = requests.get(self.url + "?download=true", headers=self.headers)
+                    azure_response = requests.get(
+                        self.url + "?download=true",
+                        headers=self.headers,
+                        verify=self.requests_verify,
+                    )
                     with open(file_name, 'wb') as f:
                         f.write(azure_response.content)
 
