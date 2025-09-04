@@ -4,6 +4,8 @@ from minio import Minio
 import sys
 import os
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import base64
 from datetime import datetime
 from PIL import Image
@@ -11,7 +13,51 @@ import uuid
 
 
 class AttachmentService:
-    def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name, token, is_base64=False, base64_chunks=None, allow_insecure_ssl=None):
+    # Connection pooling similar to tfs.ts approach
+    _session = None
+    
+    @classmethod
+    def _get_session(cls):
+        """Get or create a requests session with connection pooling and SSL configuration"""
+        if cls._session is None:
+            cls._session = requests.Session()
+            
+            # Configure retry strategy
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+            
+            # Configure HTTP adapter with connection pooling
+            adapter = HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=50,
+                max_retries=retry_strategy,
+                pool_block=False
+            )
+            
+            cls._session.mount("http://", adapter)
+            cls._session.mount("https://", adapter)
+            
+            # Configure SSL verification based on environment variables only
+            ca_bundle = os.getenv('DOWNLOAD_CA_BUNDLE', '').strip()
+            env_allow_insecure = os.getenv('ALLOW_INSECURE_SSL', '').strip().lower() in ('1', 'true', 'yes')
+            
+            if ca_bundle:
+                cls._session.verify = ca_bundle
+                print(f"DEBUG: Using CA bundle: {ca_bundle}")
+            elif env_allow_insecure:
+                cls._session.verify = False
+                print("DEBUG: SSL verification DISABLED via env var")
+            else:
+                cls._session.verify = True
+                print("DEBUG: SSL verification ENABLED (default)")
+                
+            print(f"DEBUG: Final session.verify = {cls._session.verify}")
+        
+        return cls._session
+    def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name, token, is_base64=False, base64_chunks=None):
         self.bucket_name = bucket_name
         self.minio_end_point = minio_end_point
         self.minio_access_key = minio_access_key
@@ -27,24 +73,6 @@ class AttachmentService:
         self.image_extensions = [".jpg", ".jpeg", ".png", ".ico", ".im", ".pcx", ".tga", ".tiff"]
         self.is_base64 = is_base64
         self.base64_chunks = base64_chunks
-        # Configure SSL verification for outbound HTTPS downloads
-        # Precedence:
-        #   1) allow_insecure_ssl (per-request override)
-        #   2) DOWNLOAD_CA_BUNDLE env var (path to PEM bundle)
-        #   3) ALLOW_INSECURE_SSL env var (global opt-out)
-        #   4) Default: True (verify enabled)
-        ca_bundle = os.getenv('DOWNLOAD_CA_BUNDLE', '').strip()
-        env_allow_insecure = os.getenv('ALLOW_INSECURE_SSL', '').strip().lower() in ('1', 'true', 'yes')
-        if allow_insecure_ssl is True:
-            self.requests_verify = False
-        elif allow_insecure_ssl is False:
-            self.requests_verify = True
-        elif ca_bundle:
-            self.requests_verify = ca_bundle
-        elif env_allow_insecure:
-            self.requests_verify = False
-        else:
-            self.requests_verify = True
 
     def _process_base64_chunks(self, file_name):
         """Reassemble and save base64 chunks to file"""
@@ -84,11 +112,11 @@ class AttachmentService:
                     with open(file_name, 'wb') as f:
                         f.write(base64.b64decode(base64_data))
                 else:
-                    # Normal URL -> Download from Azure DevOps or wherever
-                    azure_response = requests.get(
+                    # Normal URL -> Download from Azure DevOps or wherever using session
+                    session = self._get_session()
+                    azure_response = session.get(
                         self.url + "?download=true",
-                        headers=self.headers,
-                        verify=self.requests_verify,
+                        headers=self.headers
                     )
                     with open(file_name, 'wb') as f:
                         f.write(azure_response.content)
