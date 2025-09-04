@@ -40,21 +40,9 @@ class AttachmentService:
             cls._session.mount("http://", adapter)
             cls._session.mount("https://", adapter)
             
-            # Configure SSL verification based on environment variables only
-            ca_bundle = os.getenv('DOWNLOAD_CA_BUNDLE', '').strip()
-            env_allow_insecure = os.getenv('ALLOW_INSECURE_SSL', '').strip().lower() in ('1', 'true', 'yes')
-            
-            if ca_bundle:
-                cls._session.verify = ca_bundle
-                print(f"DEBUG: Using CA bundle: {ca_bundle}")
-            elif env_allow_insecure:
-                cls._session.verify = False
-                print("DEBUG: SSL verification DISABLED via env var")
-            else:
-                cls._session.verify = True
-                print("DEBUG: SSL verification ENABLED (default)")
-                
-            print(f"DEBUG: Final session.verify = {cls._session.verify}")
+            # Disable SSL verification by default for corporate environments
+            cls._session.verify = False
+            print("DEBUG: SSL verification DISABLED by default")
         
         return cls._session
     def __init__(self, bucket_name, minio_end_point, minio_access_key, minio_secret_key, url, ext, project_name, token, is_base64=False, base64_chunks=None):
