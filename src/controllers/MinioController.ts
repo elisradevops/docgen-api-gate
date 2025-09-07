@@ -35,12 +35,15 @@ export class MinioController {
 
       const { docType, teamProjectName, isExternalUrl, bucketName } = req.body;
 
-      if (
-        bucketName === 'templates' &&
-        req.file.mimetype !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.template'
-      ) {
-        logger.error('Not a valid template');
-        return reject('Not a valid template. Only *.dotx files are allowed');
+      if (bucketName === 'templates') {
+        const allowedMimeTypes = new Set<string>([
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.template', // .dotx
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+        ]);
+        if (!allowedMimeTypes.has(req.file.mimetype)) {
+          logger.error(`Not a valid template. Received mimetype: ${req.file.mimetype}`);
+          return reject('Not a valid template. Only *.dotx or *.docx files are allowed');
+        }
       }
       // Prepare the Minio request with file and folder details
       const minioRequest = {
