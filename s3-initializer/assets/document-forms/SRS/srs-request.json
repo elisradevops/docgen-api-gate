@@ -8,5 +8,6 @@
       "skin": "srs-skin"
     }
   ],
-  "tabIndex": 3
+  "tabIndex": 3,
+  "isDebug": true
 }
