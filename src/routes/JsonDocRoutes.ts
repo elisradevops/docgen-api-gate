@@ -3,11 +3,13 @@ import { DocumentsGeneratorController } from '../controllers/DocumentsGeneratorC
 import { MinioController } from '../controllers/MinioController';
 import moment from 'moment';
 import { DatabaseController } from '../controllers/DatabaseController';
+import { DataProviderController } from '../controllers/DataProviderController';
 
 export class Routes {
   public documentsGeneratorController: DocumentsGeneratorController = new DocumentsGeneratorController();
   public minioController: MinioController = new MinioController();
   public dataBaseController: DatabaseController = new DatabaseController();
+  public dataProviderController: DataProviderController = new DataProviderController();
   public routes(app: any, upload: any): void {
     app.route('/jsonDocument').get((req: Request, res: Response) => {
       res.status(200).json({ status: 'online - ' + moment().format() });
@@ -120,5 +122,64 @@ export class Routes {
         });
       });
     });
+
+    // Azure data provider proxy routes -> content-control
+    app
+      .route('/azure/projects')
+      .get((req: Request, res: Response) => this.dataProviderController.getTeamProjects(req, res));
+    app
+      .route('/azure/user/profile')
+      .get((req: Request, res: Response) => this.dataProviderController.getUserProfile(req, res));
+    app
+      .route('/azure/link-types')
+      .get((req: Request, res: Response) => this.dataProviderController.getCollectionLinkTypes(req, res));
+
+    app
+      .route('/azure/queries')
+      .get((req: Request, res: Response) => this.dataProviderController.getSharedQueries(req, res));
+    app
+      .route('/azure/fields')
+      .get((req: Request, res: Response) => this.dataProviderController.getFieldsByType(req, res));
+    app
+      .route('/azure/queries/:queryId/results')
+      .get((req: Request, res: Response) => this.dataProviderController.getQueryResults(req, res));
+
+    app
+      .route('/azure/tests/plans')
+      .get((req: Request, res: Response) => this.dataProviderController.getTestPlansList(req, res));
+    app
+      .route('/azure/tests/plans/:testPlanId/suites')
+      .get((req: Request, res: Response) => this.dataProviderController.getTestSuitesByPlan(req, res));
+
+    app
+      .route('/azure/git/repos')
+      .get((req: Request, res: Response) => this.dataProviderController.getGitRepoList(req, res));
+    app
+      .route('/azure/git/repos/:repoId/branches')
+      .get((req: Request, res: Response) => this.dataProviderController.getGitRepoBranches(req, res));
+    app
+      .route('/azure/git/repos/:repoId/commits')
+      .get((req: Request, res: Response) => this.dataProviderController.getGitRepoCommits(req, res));
+    app
+      .route('/azure/git/repos/:repoId/pull-requests')
+      .get((req: Request, res: Response) => this.dataProviderController.getRepoPullRequests(req, res));
+    app
+      .route('/azure/git/repos/:repoId/refs')
+      .get((req: Request, res: Response) => this.dataProviderController.getRepoRefs(req, res));
+
+    app
+      .route('/azure/pipelines')
+      .get((req: Request, res: Response) => this.dataProviderController.getPipelineList(req, res));
+    app
+      .route('/azure/pipelines/:pipelineId/runs')
+      .get((req: Request, res: Response) => this.dataProviderController.getPipelineRuns(req, res));
+    app
+      .route('/azure/pipelines/releases/definitions')
+      .get((req: Request, res: Response) => this.dataProviderController.getReleaseDefinitionList(req, res));
+    app
+      .route('/azure/pipelines/releases/definitions/:definitionId/history')
+      .get((req: Request, res: Response) =>
+        this.dataProviderController.getReleaseDefinitionHistory(req, res)
+      );
   }
 }
