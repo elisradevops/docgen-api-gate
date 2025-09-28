@@ -235,4 +235,15 @@ export class DataProviderController {
       }
     );
   }
+
+  public async getWorkItemTypeList(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const { teamProjectId = '' } = req.query as Record<string, string>;
+    await this.forward(res, '/azure/work-item-types', {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId,
+    });
+  }
 }

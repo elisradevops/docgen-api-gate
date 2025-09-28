@@ -181,5 +181,8 @@ export class Routes {
       .get((req: Request, res: Response) =>
         this.dataProviderController.getReleaseDefinitionHistory(req, res)
       );
+    app
+      .route('/azure/work-item-types')
+      .get((req: Request, res: Response) => this.dataProviderController.getWorkItemTypeList(req, res));
   }
 }
