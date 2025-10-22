@@ -5,7 +5,6 @@ import moment from 'moment';
 import { DatabaseController } from '../controllers/DatabaseController';
 import { DataProviderController } from '../controllers/DataProviderController';
 import { SharePointController } from '../controllers/SharePointController';
-import { OAuthController } from '../controllers/OAuthController';
 
 export class Routes {
   public documentsGeneratorController: DocumentsGeneratorController = new DocumentsGeneratorController();
@@ -13,7 +12,6 @@ export class Routes {
   public dataBaseController: DatabaseController = new DatabaseController();
   public dataProviderController: DataProviderController = new DataProviderController();
   public sharePointController: SharePointController = new SharePointController();
-  public oauthController: OAuthController = new OAuthController();
 
   public routes(app: any, upload: any): void {
     app.route('/jsonDocument').get((req: Request, res: Response) => {
@@ -221,22 +219,7 @@ export class Routes {
       .route('/sharepoint/configs/all')
       .get((req: Request, res: Response) => this.sharePointController.getAllConfigs(req, res));
 
-    // OAuth routes for SharePoint Online authentication
-    app
-      .route('/oauth/token')
-      .post((req: Request, res: Response) => this.oauthController.getToken(req, res));
-    
-    app
-      .route('/oauth/refresh')
-      .post((req: Request, res: Response) => this.oauthController.refreshToken(req, res));
-
-    // OAuth Authorization Code Flow with PKCE (supports MFA)
-    app
-      .route('/oauth/authorize')
-      .get((req: Request, res: Response) => this.oauthController.getAuthorizationUrl(req, res));
-    
-    app
-      .route('/oauth/callback')
-      .post((req: Request, res: Response) => this.oauthController.handleCallback(req, res));
+    // Note: OAuth is now handled by frontend (SPA flow with PKCE)
+    // Backend only provides SharePoint REST API access with OAuth tokens from frontend
   }
 }

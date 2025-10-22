@@ -1,15 +1,9 @@
 import { Request, Response } from 'express';
-import {
-  SharePointService,
-  SharePointCredentials,
-  SharePointOAuthToken,
-  SharePointConfig,
-  SharePointFile,
-} from '../services/SharePointService';
-import { SharePointConfig as ConfigModel } from '../models/SharePointConfig';
-import logger from '../util/logger';
+import { SharePointService, SharePointConfig as SharePointConfigType } from '../services/SharePointService';
 import { MinioController } from './MinioController';
-import { Readable } from 'stream';
+import logger from '../util/logger';
+import { getMinioFiles } from '../helpers/sharePointHelpers/sharePointHelper';
+import { SharePointConfig as ConfigModel } from '../models/SharePointConfig';
 
 export class SharePointController {
   private sharePointService: SharePointService;
@@ -34,7 +28,7 @@ export class SharePointController {
         return;
       }
 
-      const config: SharePointConfig = { siteUrl, library, folder };
+      const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
       const result = await this.sharePointService.testConnection(config, auth);
 
@@ -59,7 +53,7 @@ export class SharePointController {
         return;
       }
 
-      const config: SharePointConfig = { siteUrl, library, folder };
+      const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
       const files = await this.sharePointService.listTemplateFiles(config, auth);
 
@@ -85,11 +79,12 @@ export class SharePointController {
         return;
       }
 
-      const config: SharePointConfig = { siteUrl, library, folder };
+      const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
 
       // Get files from SharePoint (includes docType from subfolder names)
       const spFiles = await this.sharePointService.listTemplateFiles(config, auth);
+      logger.info(`Checking ${spFiles.length} SharePoint files for conflicts`);
 
       // Group files by docType for conflict checking
       const conflicts: any[] = [];
@@ -99,7 +94,7 @@ export class SharePointController {
 
       for (const spFile of spFiles) {
         const targetDocType = spFile.docType || docType || '';
-        
+
         // Skip files with invalid docType
         if (!targetDocType || !VALID_DOC_TYPES.includes(targetDocType.toUpperCase())) {
           invalidFiles.push({
@@ -110,40 +105,51 @@ export class SharePointController {
           });
           continue;
         }
-        
-        let existingFiles: string[] = [];
 
-        try {
-          // Check MinIO for existing files in this docType folder
-          const mockReq: any = {
-            params: { bucketName },
-            query: { docType: targetDocType, projectName, isExternalUrl: false, recurse: false },
-          };
-          const mockRes: any = {
-            status: (code: number) => ({
-              json: (data: any) => {
-                if (code === 200 && data.bucketFileList) {
-                  existingFiles = data.bucketFileList.map((f: any) => f.name);
-                }
-              },
-            }),
-          };
-
-          await this.minioController.getBucketFileList(mockReq, mockRes);
-        } catch (error) {
-          logger.warn(`Could not fetch existing files from MinIO for ${targetDocType}: ${error}`);
-        }
+        // Check MinIO for existing files in this docType folder
+        const existingFiles = await getMinioFiles(
+          this.minioController,
+          bucketName,
+          projectName,
+          targetDocType
+        );
 
         // Check if this file conflicts
-        const fileExists = existingFiles.some((existingFile) => existingFile.endsWith(spFile.name));
+        // MinIO path format: projectName/docType/filename.ext
+        // We need to match just the filename, not the full path
+        const fileName = spFile.name.split('/').pop() || spFile.name;
 
-        if (fileExists) {
-          conflicts.push({
-            name: spFile.name,
-            size: spFile.length,
-            docType: targetDocType,
-          });
+        const existingFile = existingFiles.find((ef) => {
+          const existingFileName = ef.name.split('/').pop() || ef.name;
+          return existingFileName === fileName;
+        });
+
+        if (existingFile) {
+          // File exists - check if content is different by comparing size
+          // Convert both to numbers to handle type mismatches (SharePoint may return string)
+          const spSize = Number(spFile.length);
+          const minioSize = Number(existingFile.size);
+          const sizeChanged = minioSize !== spSize;
+
+          if (sizeChanged) {
+            // File has changed - show as conflict
+            logger.info(`Conflict: ${fileName} (size changed: ${minioSize} → ${spSize})`);
+
+            conflicts.push({
+              name: spFile.name,
+              size: spFile.length,
+              docType: targetDocType,
+              existingSize: existingFile.size,
+              sizeChanged: true,
+            });
+          } else {
+            // File is identical (same size) - skip it
+            logger.debug(`Skipping identical: ${fileName} (size: ${spSize})`);
+          }
         } else {
+          // New file
+          logger.info(`New file: ${fileName}`);
+
           newFiles.push({
             name: spFile.name,
             size: spFile.length,
@@ -151,6 +157,10 @@ export class SharePointController {
           });
         }
       }
+
+      logger.info(
+        `Conflict check complete: ${newFiles.length} new, ${conflicts.length} conflicts, ${invalidFiles.length} invalid`
+      );
 
       res.status(200).json({
         success: true,
@@ -189,24 +199,60 @@ export class SharePointController {
         return;
       }
 
-      const config: SharePointConfig = { siteUrl, library, folder };
+      const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
 
       // Get all template files from SharePoint
       const allFiles = await this.sharePointService.listTemplateFiles(config, auth);
 
-      // Filter out files user wants to skip
-      const filesToSync = allFiles.filter((f) => !skipFiles.includes(f.name));
+      // Filter out files user wants to skip (from conflict dialog)
+      let filesToSync = allFiles.filter((f) => !skipFiles || !skipFiles.includes(f.name));
+
+      // Also skip identical files (same size as existing files in MinIO)
+      const identicalFiles: string[] = [];
+      for (const file of filesToSync) {
+        const targetDocType = file.docType || docType || '';
+        if (!targetDocType) continue;
+
+        try {
+          // Check if file exists in MinIO with same size
+          const minioFiles = await getMinioFiles(
+            this.minioController,
+            bucketName,
+            projectName,
+            targetDocType
+          );
+          const fileName = file.name.split('/').pop() || file.name;
+          const existingFile = minioFiles.find((ef) => {
+            const existingFileName = ef.name.split('/').pop() || ef.name;
+            return existingFileName === fileName;
+          });
+
+          if (existingFile && Number(existingFile.size) === Number(file.length)) {
+            // Identical file - skip it
+            identicalFiles.push(file.name);
+            logger.debug(`Skipping identical: ${file.name} (size: ${file.length})`);
+          }
+        } catch (error) {
+          logger.warn(`Could not check for identical file: ${file.name}`);
+        }
+      }
+
+      // Remove identical files from sync list
+      filesToSync = filesToSync.filter((f) => !identicalFiles.includes(f.name));
 
       logger.info(
-        `Syncing ${filesToSync.length} files from SharePoint to MinIO (skipping ${skipFiles.length})`
+        `Syncing ${filesToSync.length} files from SharePoint to MinIO (user skipped: ${
+          skipFiles?.length || 0
+        }, identical: ${identicalFiles.length})`
       );
 
       const syncResults = {
         success: true,
         totalFiles: allFiles.length,
         syncedFiles: [] as string[],
-        skippedFiles: skipFiles || [],
+        skippedFiles: [...(skipFiles || []), ...identicalFiles],
+        identicalFiles,
         failedFiles: [] as { name: string; error: string }[],
       };
 
@@ -236,7 +282,11 @@ export class SharePointController {
           // Validate docType against allowed values
           const VALID_DOC_TYPES = ['STD', 'STR', 'SVD', 'SRS'];
           if (!VALID_DOC_TYPES.includes(targetDocType.toUpperCase())) {
-            logger.warn(`Skipping ${file.name} - invalid docType: ${targetDocType}. Valid types are: ${VALID_DOC_TYPES.join(', ')}`);
+            logger.warn(
+              `Skipping ${
+                file.name
+              } - invalid docType: ${targetDocType}. Valid types are: ${VALID_DOC_TYPES.join(', ')}`
+            );
             syncResults.failedFiles.push({
               name: file.name,
               error: `Invalid docType "${targetDocType}". Valid types are: ${VALID_DOC_TYPES.join(', ')}`,
@@ -248,12 +298,14 @@ export class SharePointController {
           const fs = require('fs');
           const path = require('path');
           const os = require('os');
-          
+
           const tempDir = os.tmpdir();
           const tempFilePath = path.join(tempDir, `${Date.now()}-${file.name}`);
           fs.writeFileSync(tempFilePath, fileBuffer);
 
-          logger.info(`Uploading to MinIO: bucketName=${bucketName}, projectName=${projectName}, docType=${targetDocType}`);
+          logger.info(
+            `Uploading to MinIO: bucketName=${bucketName}, projectName=${projectName}, docType=${targetDocType}`
+          );
 
           // Create a file object compatible with multer
           const fileObject: any = {
@@ -280,7 +332,7 @@ export class SharePointController {
 
           // MinioController.uploadFile returns a Promise
           await this.minioController.uploadFile(mockReq, mockRes);
-          
+
           // If we get here, upload succeeded
           syncResults.syncedFiles.push(file.name);
           logger.info(`Successfully synced: ${file.name}`);
