@@ -4,12 +4,17 @@ import { MinioController } from '../controllers/MinioController';
 import moment from 'moment';
 import { DatabaseController } from '../controllers/DatabaseController';
 import { DataProviderController } from '../controllers/DataProviderController';
+import { SharePointController } from '../controllers/SharePointController';
+import { OAuthController } from '../controllers/OAuthController';
 
 export class Routes {
   public documentsGeneratorController: DocumentsGeneratorController = new DocumentsGeneratorController();
   public minioController: MinioController = new MinioController();
   public dataBaseController: DatabaseController = new DatabaseController();
   public dataProviderController: DataProviderController = new DataProviderController();
+  public sharePointController: SharePointController = new SharePointController();
+  public oauthController: OAuthController = new OAuthController();
+
   public routes(app: any, upload: any): void {
     app.route('/jsonDocument').get((req: Request, res: Response) => {
       res.status(200).json({ status: 'online - ' + moment().format() });
@@ -184,5 +189,54 @@ export class Routes {
     app
       .route('/azure/work-item-types')
       .get((req: Request, res: Response) => this.dataProviderController.getWorkItemTypeList(req, res));
+
+    // SharePoint integration routes
+    app
+      .route('/sharepoint/test-connection')
+      .post((req: Request, res: Response) => this.sharePointController.testConnection(req, res));
+    
+    app
+      .route('/sharepoint/list-files')
+      .post((req: Request, res: Response) => this.sharePointController.listFiles(req, res));
+    
+    app
+      .route('/sharepoint/check-conflicts')
+      .post((req: Request, res: Response) => this.sharePointController.checkConflicts(req, res));
+    
+    app
+      .route('/sharepoint/sync-templates')
+      .post((req: Request, res: Response) => this.sharePointController.syncTemplates(req, res));
+    
+    app
+      .route('/sharepoint/config')
+      .post((req: Request, res: Response) => this.sharePointController.saveConfig(req, res))
+      .get((req: Request, res: Response) => this.sharePointController.getConfig(req, res))
+      .delete((req: Request, res: Response) => this.sharePointController.deleteConfig(req, res));
+    
+    app
+      .route('/sharepoint/configs')
+      .get((req: Request, res: Response) => this.sharePointController.getConfigs(req, res));
+    
+    app
+      .route('/sharepoint/configs/all')
+      .get((req: Request, res: Response) => this.sharePointController.getAllConfigs(req, res));
+
+    // OAuth routes for SharePoint Online authentication
+    app
+      .route('/oauth/token')
+      .post((req: Request, res: Response) => this.oauthController.getToken(req, res));
+    
+    app
+      .route('/oauth/refresh')
+      .post((req: Request, res: Response) => this.oauthController.refreshToken(req, res));
+
+    // OAuth Authorization Code Flow with PKCE (supports MFA)
+    app
+      .route('/oauth/authorize')
+      .get((req: Request, res: Response) => this.oauthController.getAuthorizationUrl(req, res));
+    
+    app
+      .route('/oauth/callback')
+      .post((req: Request, res: Response) => this.oauthController.handleCallback(req, res));
   }
 }
