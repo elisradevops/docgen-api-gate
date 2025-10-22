@@ -63,3 +63,6 @@ bin
 # vscode
 .vscode/
 minio/
+
+# mac.DS_Store
+.DS_Store
