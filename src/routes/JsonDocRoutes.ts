@@ -128,6 +128,9 @@ export class Routes {
 
     // Azure data provider proxy routes -> content-control
     app
+      .route('/azure/check-org-url')
+      .get((req: Request, res: Response) => this.dataProviderController.checkOrgUrl(req, res));
+    app
       .route('/azure/projects')
       .get((req: Request, res: Response) => this.dataProviderController.getTeamProjects(req, res));
     app

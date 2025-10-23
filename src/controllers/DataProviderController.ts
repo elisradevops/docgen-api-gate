@@ -42,6 +42,17 @@ export class DataProviderController {
   }
 
   // Management
+  public async checkOrgUrl(req: Request, res: Response) {
+    const orgUrl = String(req.headers['x-ado-org-url'] || '').trim();
+    if (!orgUrl) {
+      res.status(400).json({ message: 'Missing X-Ado-Org-Url header' });
+      return;
+    }
+    // Optional: include PAT for combined URL + PAT validation
+    const token = String(req.headers['x-ado-pat'] || '').trim();
+    await this.forward(res, '/azure/check-org-url', { orgUrl, token });
+  }
+
   public async getTeamProjects(req: Request, res: Response) {
     const creds = this.getCreds(req, res);
     if (!creds) return;
