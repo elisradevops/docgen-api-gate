@@ -6,6 +6,7 @@ COPY . ./
 
 RUN npm install
 RUN npm install typescript -g
+RUN npm test
 RUN npm run build
 
 # Final stage
