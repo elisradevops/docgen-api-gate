@@ -66,3 +66,6 @@ minio/
 
 # mac.DS_Store
 .DS_Store
+
+# Jest JUnit report
+junit.xml
