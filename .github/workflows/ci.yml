@@ -6,9 +6,33 @@ on:
     paths-ignore:
       - '.github/**'
 jobs:
+  test:
+    name: 🧪 tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+      - name: 🟢 node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 14
+          cache: 'npm'
+      - name: 📦 install deps
+        run: npm ci
+      - name: 🧪 run tests (with coverage)
+        run: npm test
+      - name: ⬆️ upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: coverage
+          if-no-files-found: ignore
+
   release:
     name: 🚀 publish
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - name: 📚 checkout
         uses: actions/checkout@v2
