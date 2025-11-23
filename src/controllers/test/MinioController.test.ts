@@ -23,18 +23,30 @@ jest.mock('minio', () => ({
   Client: jest.fn(() => mockS3),
 }));
 
-jest.mock('../../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+jest.mock('../../util/logger', () => ({
+  debug: jest.fn(),
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+}));
 
 import { MinioController } from '../MinioController';
 import { buildRes } from '../../test/utils/testResponse';
 
-
 function makeStream(emissions: any[]) {
   const handlers: Record<string, Function[]> = { data: [], end: [], error: [] };
   const stream = {
-    on: (evt: 'data'|'end'|'error', cb: Function) => { handlers[evt].push(cb); return stream; },
-    emitAll: () => { emissions.forEach(e => handlers.data.forEach(cb => cb(e))); handlers.end.forEach(cb => cb()); },
-    emitError: (err: any) => { handlers.error.forEach(cb => cb(err)); },
+    on: (evt: 'data' | 'end' | 'error', cb: Function) => {
+      handlers[evt].push(cb);
+      return stream;
+    },
+    emitAll: () => {
+      emissions.forEach((e) => handlers.data.forEach((cb) => cb(e)));
+      handlers.end.forEach((cb) => cb());
+    },
+    emitError: (err: any) => {
+      handlers.error.forEach((cb) => cb(err));
+    },
   } as any;
   return stream;
 }
@@ -79,7 +91,9 @@ describe('MinioController', () => {
    * Validates 400 error when file is not provided for non-external upload.
    */
   test('uploadFile: 400 when file missing', async () => {
-    const req: any = { body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false } };
+    const req: any = {
+      body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false },
+    };
     const res = buildRes();
 
     await expect(controller.uploadFile(req, res)).rejects.toEqual('No file provided');
@@ -90,7 +104,10 @@ describe('MinioController', () => {
    * Rejects when uploading to templates bucket with non-template mimetype.
    */
   test('uploadFile: rejects invalid template mimetype', async () => {
-    const req: any = { body: { bucketName: 'templates', teamProjectName: 'p', docType: 'STD', isExternalUrl: false }, file: { mimetype: 'image/png', originalname: 'f.png', path: '/tmp/f.png' } };
+    const req: any = {
+      body: { bucketName: 'templates', teamProjectName: 'p', docType: 'STD', isExternalUrl: false },
+      file: { mimetype: 'image/png', originalname: 'f.png', path: '/tmp/f.png' },
+    };
 
     await expect(controller.uploadFile(req, {} as any)).rejects.toContain('Not a valid template');
   });
@@ -102,9 +119,18 @@ describe('MinioController', () => {
   test('uploadFile: success path uploads and unlinks temp file', async () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(true);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) => cb(null, { etag: 'etag-1' }));
+    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+      cb(null, { etag: 'etag-1' })
+    );
 
-    const req: any = { body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false }, file: { mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', originalname: 'f.docx', path: '/tmp/f.docx' } };
+    const req: any = {
+      body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
 
     const res = await controller.uploadFile(req, {} as any);
     expect(res).toEqual({ fileItem: expect.any(Object) });
@@ -143,7 +169,9 @@ describe('MinioController', () => {
     const dataHandlers: any = { data: [] as any[], end: () => {}, error: () => {} };
     mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => {
       const stream: any = {
-        on: (evt: string, fn: any) => { (dataHandlers as any)[evt] = fn; },
+        on: (evt: string, fn: any) => {
+          (dataHandlers as any)[evt] = fn;
+        },
       };
       cb(null, stream);
     });
@@ -171,5 +199,119 @@ describe('MinioController', () => {
     expect(result).toContain('created successfully');
     expect(mockS3.makeBucket).toHaveBeenCalled();
     // Note: controller resolves before chained promises finish; we won't assert policy/lifecycle calls here
+  });
+
+  test('createBucketIfDoesentExsist: resolves when bucket already exists', async () => {
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+
+    const req: any = { body: { bucketName: 'attachments' } };
+
+    const result = await controller.createBucketIfDoesentExsist(req, {} as any);
+    expect(result).toContain('exsists.');
+  });
+
+  test('createBucketIfDoesentExsist: rejects when bucketExists fails', async () => {
+    mockS3.bucketExists.mockRejectedValueOnce(new Error('boom'));
+
+    const req: any = { body: { bucketName: 'attachments' } };
+
+    await expect(controller.createBucketIfDoesentExsist(req, {} as any)).rejects.toEqual('boom');
+  });
+
+  test('uploadFile: external url and bucket creation', async () => {
+    const fs = require('fs');
+    mockS3.bucketExists.mockResolvedValueOnce(false);
+    mockS3.makeBucket.mockResolvedValueOnce(undefined);
+    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+      cb(null, { etag: 'etag-2' })
+    );
+
+    const req: any = {
+      body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: true },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
+
+    const result: any = await controller.uploadFile(req, {} as any);
+    expect(result.fileItem.url).toContain('http://public/');
+    expect(mockS3.makeBucket).toHaveBeenCalled();
+    expect(fs.unlinkSync).toHaveBeenCalled();
+  });
+
+  test('uploadFile: upload error rejects', async () => {
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+    const uploadError = new Error('upload failed');
+    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+      cb(uploadError)
+    );
+
+    const req: any = {
+      body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).rejects.toBe(uploadError);
+  });
+
+  test('deleteFile: deletes when matching etag found', async () => {
+    const req: any = { params: { etag: '"123"', projectName: 'p', bucketName: 'templates' } };
+    const stream = makeStream([{ name: 'p/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.removeObject.mockImplementation((_b: string, _k: string, cb: Function) => cb(null));
+
+    const p = controller.deleteFile(req, {} as any);
+    stream.emitAll();
+    await expect(p).resolves.toContain('deleted successfully');
+    expect(mockS3.removeObject).toHaveBeenCalled();
+  });
+
+  test('getJSONContentFromFile: rejects on getObject error', async () => {
+    const req: any = { params: { bucketName: 'b', folderName: 'f', fileName: 'file.json' } };
+    mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => {
+      cb({ code: 'NoSuchKey', key: 'f/file.json' }, null);
+    });
+
+    await expect(controller.getJSONContentFromFile(req, {} as any)).rejects.toContain(
+      'error due to NoSuchKey'
+    );
+  });
+
+  test('getJSONContentFromFile: stream error rejects', async () => {
+    const req: any = { params: { bucketName: 'b', folderName: 'f', fileName: 'file.json' } };
+    const handlers: any = { data: () => {}, end: () => {}, error: () => {} };
+    mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => {
+      const stream: any = {
+        on: (evt: string, fn: any) => {
+          (handlers as any)[evt] = fn;
+        },
+      };
+      cb(null, stream);
+    });
+
+    const p = controller.getJSONContentFromFile(req, {} as any);
+    const err = new Error('stream error');
+    handlers.error(err);
+    await expect(p).rejects.toBe(err);
+  });
+
+  test('getBucketFileList: resolves empty array on stream error', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitError(new Error('stream fail'));
+    const result: any = await p;
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(0);
   });
 });
