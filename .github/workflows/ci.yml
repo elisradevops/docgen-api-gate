@@ -15,7 +15,7 @@ jobs:
       - name: 🟢 node
         uses: actions/setup-node@v4
         with:
-          node-version: 14
+          node-version: 20
           cache: 'npm'
       - name: 📦 install deps
         run: npm ci
@@ -35,11 +35,11 @@ jobs:
     needs: test
     steps:
       - name: 📚 checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: 🟢 node
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: 14
+          node-version: 20
           registry-url: https://registry.npmjs.org
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
