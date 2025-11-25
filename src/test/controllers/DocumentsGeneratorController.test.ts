@@ -1,5 +1,5 @@
-import { DocumentsGeneratorController } from '../DocumentsGeneratorController';
-import { buildRes } from '../../test/utils/testResponse';
+import { DocumentsGeneratorController } from '../../controllers/DocumentsGeneratorController';
+import { buildRes } from '../utils/testResponse';
 
 jest.mock('axios', () => ({
   post: jest.fn(),

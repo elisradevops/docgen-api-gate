@@ -1,9 +1,9 @@
-import { buildRes } from '../../test/utils/testResponse';
+import { buildRes } from '../utils/testResponse';
 jest.mock('mongoose', () => {
   const findOne = jest.fn();
   const find = jest.fn();
   const findOneAndDelete = jest.fn();
-  const FavoriteCtor: any = function(this: any, doc: any) {
+  const FavoriteCtor: any = function (this: any, doc: any) {
     Object.assign(this, doc);
     this.save = jest.fn().mockResolvedValue(this);
   };
@@ -33,7 +33,7 @@ jest.mock('../../helpers/openTracing/tracer-middleware', () => ({
 jest.mock('../../util/logger', () => ({ error: jest.fn(), debug: jest.fn() }));
 
 describe('DatabaseController', () => {
-  const { DatabaseController } = require('../DatabaseController');
+  const { DatabaseController } = require('../../controllers/DatabaseController');
   let controller: typeof DatabaseController.prototype;
   let mongooseMod: any;
   beforeEach(() => {
@@ -58,11 +58,27 @@ describe('DatabaseController', () => {
    * If a favorite exists for user+docType+teamProject+name, updates its data and returns 200.
    */
   test('createFavorite: updates existing favorite', async () => {
-    const req: any = { body: { userId: 'u1', name: 'n1', docType: 'STD', dataToSave: { a: 1 }, teamProjectId: 'tp', isShared: false } };
+    const req: any = {
+      body: {
+        userId: 'u1',
+        name: 'n1',
+        docType: 'STD',
+        dataToSave: { a: 1 },
+        teamProjectId: 'tp',
+        isShared: false,
+      },
+    };
     const res = buildRes();
 
     const Favorite = mongooseMod._FavoriteCtor;
-    const existing = new Favorite({ id: 'f1', userId: 'u1', name: 'n1', docType: 'STD', dataToSave: { a: 0 }, teamProjectId: 'tp' });
+    const existing = new Favorite({
+      id: 'f1',
+      userId: 'u1',
+      name: 'n1',
+      docType: 'STD',
+      dataToSave: { a: 0 },
+      teamProjectId: 'tp',
+    });
     Favorite.findOne.mockResolvedValueOnce(existing);
 
     await controller.createFavorite(req, res);
@@ -76,7 +92,9 @@ describe('DatabaseController', () => {
    * Creates a new favorite when one does not already exist, returns 201 and favorite payload.
    */
   test('createFavorite: creates new favorite when not exists', async () => {
-    const req: any = { body: { userId: 'u1', name: 'n1', docType: 'STD', dataToSave: { a: 1 }, teamProjectId: 'tp' } };
+    const req: any = {
+      body: { userId: 'u1', name: 'n1', docType: 'STD', dataToSave: { a: 1 }, teamProjectId: 'tp' },
+    };
     const res = buildRes();
 
     const Favorite = mongooseMod._FavoriteCtor;

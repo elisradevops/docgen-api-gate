@@ -30,8 +30,8 @@ jest.mock('../../util/logger', () => ({
   error: jest.fn(),
 }));
 
-import { MinioController } from '../MinioController';
-import { buildRes } from '../../test/utils/testResponse';
+import { MinioController } from '../../controllers/MinioController';
+import { buildRes } from '../utils/testResponse';
 
 function makeStream(emissions: any[]) {
   const handlers: Record<string, Function[]> = { data: [], end: [], error: [] };
@@ -84,6 +84,22 @@ describe('MinioController', () => {
 
     expect(result.length).toBe(1);
     expect(result[0].createdBy).toBe('alice');
+  });
+
+  test('getBucketFileList: handles metadata stat error and sets createdBy empty', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'p/STD/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockRejectedValueOnce(new Error('stat-fail'));
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].createdBy).toBe('');
   });
 
   /**
@@ -218,6 +234,16 @@ describe('MinioController', () => {
     await expect(controller.createBucketIfDoesentExsist(req, {} as any)).rejects.toEqual('boom');
   });
 
+  test('createBucketIfDoesentExsist: resolves even if makeBucket fails (current behavior)', async () => {
+    mockS3.bucketExists.mockResolvedValueOnce(false);
+    mockS3.makeBucket.mockRejectedValueOnce(new Error('mk-fail'));
+
+    const req: any = { body: { bucketName: 'attachments' } };
+
+    const result = await controller.createBucketIfDoesentExsist(req, {} as any);
+    expect(result).toContain('created successfully');
+  });
+
   test('uploadFile: external url and bucket creation', async () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(false);
@@ -260,6 +286,21 @@ describe('MinioController', () => {
     await expect(controller.uploadFile(req, {} as any)).rejects.toBe(uploadError);
   });
 
+  test('uploadFile: bucketExists rejection triggers catch handler', async () => {
+    mockS3.bucketExists.mockRejectedValueOnce(new Error('bucket-check-fail'));
+
+    const req: any = {
+      body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).rejects.toEqual('bucket-check-fail');
+  });
+
   test('deleteFile: deletes when matching etag found', async () => {
     const req: any = { params: { etag: '"123"', projectName: 'p', bucketName: 'templates' } };
     const stream = makeStream([{ name: 'p/file1.dotx', etag: '123' }]);
@@ -270,6 +311,29 @@ describe('MinioController', () => {
     stream.emitAll();
     await expect(p).resolves.toContain('deleted successfully');
     expect(mockS3.removeObject).toHaveBeenCalled();
+  });
+
+  test('deleteFile: removeObject error rejects with message', async () => {
+    const req: any = { params: { etag: '"123"', projectName: 'p', bucketName: 'templates' } };
+    const stream = makeStream([{ name: 'p/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.removeObject.mockImplementation((_b: string, _k: string, cb: Function) =>
+      cb(new Error('rm-fail'))
+    );
+
+    const p = controller.deleteFile(req, {} as any);
+    stream.emitAll();
+    await expect(p).rejects.toEqual('rm-fail');
+  });
+
+  test('deleteFile: stream error rejects with message', async () => {
+    const req: any = { params: { etag: '"123"', projectName: 'p', bucketName: 'templates' } };
+    const stream = makeStream([]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+
+    const p = controller.deleteFile(req, {} as any);
+    stream.emitError(new Error('list-stream-fail'));
+    await expect(p).rejects.toEqual('list-stream-fail');
   });
 
   test('getJSONContentFromFile: rejects on getObject error', async () => {
@@ -313,5 +377,36 @@ describe('MinioController', () => {
     const result: any = await p;
     expect(Array.isArray(result)).toBe(true);
     expect(result.length).toBe(0);
+  });
+
+  test('getBucketFileList: uses public endpoint when isExternalUrl=true and no docType', async () => {
+    const req: any = {
+      params: { bucketName: 'templates' },
+      query: { projectName: 'p', isExternalUrl: 'true' },
+    };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'p/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({ metaData: {} });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].url).toContain('http://public/');
+  });
+
+  test('getBucketFileList: synchronous error in handleStream rejects with error message', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: {} };
+    const res = buildRes();
+
+    const spy = jest.spyOn(controller as any, 'handleStream').mockImplementation(() => {
+      throw new Error('sync-fail');
+    });
+
+    await expect(controller.getBucketFileList(req, res)).rejects.toEqual('sync-fail');
+    spy.mockRestore();
   });
 });
