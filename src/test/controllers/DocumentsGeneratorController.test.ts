@@ -1,11 +1,16 @@
-import { DocumentsGeneratorController } from '../DocumentsGeneratorController';
-import { buildRes } from '../../test/utils/testResponse';
+import { DocumentsGeneratorController } from '../../controllers/DocumentsGeneratorController';
+import { buildRes } from '../utils/testResponse';
 
 jest.mock('axios', () => ({
   post: jest.fn(),
 }));
 
-jest.mock('../../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+jest.mock('../../util/logger', () => ({
+  debug: jest.fn(),
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+}));
 
 const genMock = { generateContentControls: jest.fn() };
 jest.mock('../../helpers/JsonDocGenerators/JsonDocumentGenerator', () => ({
@@ -94,5 +99,54 @@ describe('DocumentsGeneratorController', () => {
     const res = buildRes();
 
     await expect(controller.createJSONDoc(req, res)).rejects.toEqual('gen failed');
+  });
+  test('normalizes bucket name and fills default upload properties from env', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+
+    const req = makeReq({ uploadProperties: { bucketName: 'ATTACH_MENTS ' } });
+    const res = buildRes();
+
+    const result = await controller.createJSONDoc(req, res);
+    expect(result).toEqual({ url: 'http://doc' });
+
+    expect(axios.post.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        minioEndPoint: 'http://minio',
+        minioAccessKey: 'user',
+        minioSecretKey: 'pass',
+      })
+    );
+
+    const secondCallBody = axios.post.mock.calls[1][1];
+    expect(secondCallBody.uploadProperties.bucketName).toBe('attach-ments');
+  });
+
+  test('uses excel endpoint when content controls contain spreadsheet', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://excel-doc' } });
+    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+
+    const req = makeReq();
+    const res = buildRes();
+
+    const result = await controller.createJSONDoc(req, res);
+    expect(result).toEqual({ url: 'http://excel-doc' });
+    expect(axios.post.mock.calls[1][0]).toBe('http://jw/api/excel/create');
+  });
+
+  test('json-to-word service error transforms and rejects with message', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockRejectedValueOnce({ response: { data: { message: 'json-to-word failed' } } });
+    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+
+    const req = makeReq();
+    const res = buildRes();
+
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('json-to-word failed');
   });
 });

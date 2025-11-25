@@ -1,5 +1,5 @@
-import { buildRes } from '../../test/utils/testResponse';
-import { DataProviderController } from '../DataProviderController';
+import { buildRes } from '../utils/testResponse';
+import { DataProviderController } from '../../controllers/DataProviderController';
 
 jest.mock('axios', () => {
   const post = jest.fn();
@@ -8,7 +8,12 @@ jest.mock('axios', () => {
 });
 
 // Silence logger if used indirectly
-jest.mock('../../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+jest.mock('../../util/logger', () => ({
+  debug: jest.fn(),
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+}));
 
 describe('DataProviderController', () => {
   const axiosMod = require('axios');
@@ -32,7 +37,9 @@ describe('DataProviderController', () => {
     await controller.getTeamProjects(req, res);
 
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({ message: 'Missing credentials: X-Ado-Org-Url and X-Ado-PAT are required' });
+    expect(res.json).toHaveBeenCalledWith({
+      message: 'Missing credentials: X-Ado-Org-Url and X-Ado-PAT are required',
+    });
   });
 
   /**
@@ -54,7 +61,10 @@ describe('DataProviderController', () => {
    * Forwards request to content-control service and returns 200 with upstream data.
    */
   test('getGitRepoList: forwards to content-control on success', async () => {
-    const req: any = { headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' }, query: { teamProjectId: 'tp' } };
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      query: { teamProjectId: 'tp' },
+    };
     const res = buildRes();
 
     axiosMod.create().post.mockResolvedValueOnce({ data: [{ id: 1 }] });
@@ -62,7 +72,11 @@ describe('DataProviderController', () => {
     await controller.getGitRepoList(req, res);
 
     expect(axiosMod.create).toHaveBeenCalled();
-    expect(axiosMod.create().post).toHaveBeenCalledWith('/azure/git/repos', { orgUrl: 'https://org', token: 'pat', teamProjectId: 'tp' });
+    expect(axiosMod.create().post).toHaveBeenCalledWith('/azure/git/repos', {
+      orgUrl: 'https://org',
+      token: 'pat',
+      teamProjectId: 'tp',
+    });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.body).toEqual([{ id: 1 }]);
   });
@@ -84,7 +98,10 @@ describe('DataProviderController', () => {
     await controller.getRepoPullRequests(req, res);
 
     expect(res.status).toHaveBeenCalledWith(503);
-    expect(res.body).toEqual({ message: 'Upstream error calling /azure/git/repos/r1/pull-requests', error: { msg: 'cc down' } });
+    expect(res.body).toEqual({
+      message: 'Upstream error calling /azure/git/repos/r1/pull-requests',
+      error: { msg: 'cc down' },
+    });
   });
 
   /**
@@ -155,7 +172,11 @@ describe('DataProviderController', () => {
       {
         name: 'getTestSuitesByPlan',
         call: (c, r, s) => c.getTestSuitesByPlan(r, s),
-        req: { headers, params: { testPlanId: 'p1' }, query: { teamProjectId: 'tp', includeChildren: 'false' } },
+        req: {
+          headers,
+          params: { testPlanId: 'p1' },
+          query: { teamProjectId: 'tp', includeChildren: 'false' },
+        },
         path: '/azure/tests/plans/p1/suites',
         payload: { orgUrl: 'https://org', token: 'pat', teamProjectId: 'tp', includeChildren: false },
       },
@@ -247,10 +268,24 @@ describe('DataProviderController', () => {
    */
   describe('missing creds returns 400 across relevant methods', () => {
     const methods = [
-      'getTeamProjects', 'getUserProfile', 'getCollectionLinkTypes', 'getSharedQueries', 'getFieldsByType',
-      'getQueryResults', 'getTestPlansList', 'getTestSuitesByPlan', 'getGitRepoList', 'getGitRepoBranches',
-      'getGitRepoCommits', 'getRepoPullRequests', 'getRepoRefs', 'getPipelineList', 'getPipelineRuns',
-      'getReleaseDefinitionList', 'getReleaseDefinitionHistory', 'getWorkItemTypeList'
+      'getTeamProjects',
+      'getUserProfile',
+      'getCollectionLinkTypes',
+      'getSharedQueries',
+      'getFieldsByType',
+      'getQueryResults',
+      'getTestPlansList',
+      'getTestSuitesByPlan',
+      'getGitRepoList',
+      'getGitRepoBranches',
+      'getGitRepoCommits',
+      'getRepoPullRequests',
+      'getRepoRefs',
+      'getPipelineList',
+      'getPipelineRuns',
+      'getReleaseDefinitionList',
+      'getReleaseDefinitionHistory',
+      'getWorkItemTypeList',
     ] as const;
 
     test.each(methods)('%s returns 400 when creds missing', async (method) => {

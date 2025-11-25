@@ -37,10 +37,11 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^18.19.0",
     "@types/nodemailer": "^6.4.0",
-    "jest-util": "^29.7.0",
     "jest": "^29.7.0",
     "jest-junit": "^16.0.0",
+    "jest-util": "^29.7.0",
     "nodemon": "^3.0.0",
+    "supertest": "^7.1.4",
     "ts-jest": "^29.2.3",
     "ts-node": "^10.9.0",
     "typescript": "^5.3.0"
@@ -51,6 +52,19 @@
     "testPathIgnorePatterns": [
       "/bin/"
     ],
+    "collectCoverageFrom": [
+      "src/**/*.{ts,tsx,js,jsx}",
+      "!src/test/**",
+      "!src/**/__mocks__/**"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 70,
+        "functions": 90,
+        "lines": 90,
+        "statements": 90
+      }
+    },
     "reporters": [
       "default",
       "jest-junit"

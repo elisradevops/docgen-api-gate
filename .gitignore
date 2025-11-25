@@ -69,3 +69,6 @@ minio/
 
 # Jest JUnit report
 junit.xml
+
+# Multer upload temp directory
+uploads/
