@@ -9,6 +9,7 @@ sleep 20
 # remove existing files from templates bucket (only inside shared folder)
 ./mc rm --recursive --force doc-gen-minio/templates/shared/
 # load templates
+find ./assets/templates -name '.DS_Store' -delete
 ./mc cp --recursive ./assets/templates/ doc-gen-minio/templates/
 
 # check and  setup bucket document-forms
@@ -17,6 +18,7 @@ sleep 20
 # remove existing files from document-forms bucket
 ./mc rm --recursive --force doc-gen-minio/document-forms/
 #load form-templates
+find ./assets/document-forms -name '.DS_Store' -delete
 ./mc cp --recursive ./assets/document-forms/ doc-gen-minio/document-forms/
 
 # check and  setup bucket attachments
