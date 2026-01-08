@@ -76,7 +76,9 @@ describe('MinioController', () => {
 
     const stream = makeStream([{ name: 'p/STD/file1.dotx', etag: '123' }]);
     mockS3.listObjectsV2.mockReturnValueOnce(stream);
-    mockS3.statObject.mockResolvedValueOnce({ metaData: { createdBy: 'alice' } });
+    mockS3.statObject.mockResolvedValueOnce({
+      metaData: { createdBy: 'alice', inputSummary: 'docType=STD', inputDetailsKey: 'p/STD/__input__/file1.input.json' },
+    });
 
     const p = controller.getBucketFileList(req, res);
     stream.emitAll();
@@ -84,6 +86,99 @@ describe('MinioController', () => {
 
     expect(result.length).toBe(1);
     expect(result[0].createdBy).toBe('alice');
+    expect(result[0].inputSummary).toBe('docType=STD');
+    expect(result[0].inputDetailsKey).toBe('p/STD/__input__/file1.input.json');
+  });
+
+  test('getBucketFileList: reads x-amz-meta-* keys for backwards compatibility', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'p/STD/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({
+      metaData: {
+        'x-amz-meta-createdby': 'alice',
+        'x-amz-meta-inputsummary': 'docType=STD',
+        'x-amz-meta-inputdetailskey': 'p/STD/__input__/file1.input.json',
+      },
+    });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].createdBy).toBe('alice');
+    expect(result[0].inputSummary).toBe('docType=STD');
+    expect(result[0].inputDetailsKey).toBe('p/STD/__input__/file1.input.json');
+  });
+
+  test('getBucketFileList: filters out __input__ sidecar objects', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([
+      { name: 'p/STD/__input__/file1.dotx.input.json', etag: 'meta' },
+      { name: 'p/STD/file1.dotx', etag: '123' },
+    ]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({ metaData: { createdBy: 'alice', inputSummary: 'docType=STD' } });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].name).toBe('p/STD/file1.dotx');
+    expect(mockS3.statObject).toHaveBeenCalledTimes(1);
+  });
+
+  test('getBucketFileList: skips prefix entries without name', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([{ prefix: 'p/STD/' }, { name: 'p/STD/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({ metaData: { createdBy: 'alice', inputSummary: 'docType=STD' } });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].name).toBe('p/STD/file1.dotx');
+    expect(mockS3.statObject).toHaveBeenCalledTimes(1);
+  });
+
+  test('getBucketFileList: returns prefixes for document-forms root listing', async () => {
+    const req: any = { params: { bucketName: 'document-forms' }, query: {} };
+    const res = buildRes();
+
+    const stream = makeStream([{ prefix: 'STD/' }, { prefix: 'STR/' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result).toEqual([{ prefix: 'STD/' }, { prefix: 'STR/' }]);
+    expect(mockS3.statObject).toHaveBeenCalledTimes(0);
+  });
+
+  test('getBucketFileList: returns name-as-prefix for document-forms root listing', async () => {
+    const req: any = { params: { bucketName: 'document-forms' }, query: {} };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'STD/' }, { name: 'STR/' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result).toEqual([{ prefix: 'STD/' }, { prefix: 'STR/' }]);
+    expect(mockS3.statObject).toHaveBeenCalledTimes(0);
   });
 
   test('getBucketFileList: handles metadata stat error and sets createdBy empty', async () => {
@@ -100,6 +195,7 @@ describe('MinioController', () => {
 
     expect(result.length).toBe(1);
     expect(result[0].createdBy).toBe('');
+    expect(result[0].inputSummary).toBe('');
   });
 
   /**
@@ -196,6 +292,24 @@ describe('MinioController', () => {
     dataHandlers.data(Buffer.from('{"a":1}'));
     dataHandlers.end();
     await expect(p).resolves.toEqual({ a: 1 });
+  });
+
+  test('getJSONContentFromObject: success', async () => {
+    const req: any = { params: { bucketName: 'b', objectName: 'p/STD/__input__/file1.input.json' } };
+    const dataHandlers: any = { data: [] as any[], end: () => {}, error: () => {} };
+    mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => {
+      const stream: any = {
+        on: (evt: string, fn: any) => {
+          (dataHandlers as any)[evt] = fn;
+        },
+      };
+      cb(null, stream);
+    });
+
+    const p = controller.getJSONContentFromObject(req, {} as any);
+    dataHandlers.data(Buffer.from('{"ok":true}'));
+    dataHandlers.end();
+    await expect(p).resolves.toEqual({ ok: true });
   });
 
   /**

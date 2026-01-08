@@ -85,6 +85,18 @@ export class Routes {
             res.status(404).json({ status: 404, message: err });
           });
       });
+    app
+      .route('/minio/contentFromObject/:bucketName/:objectName(*)')
+      .get(async (req: Request, res: Response) => {
+        this.minioController
+          .getJSONContentFromObject(req, res)
+          .then((contentFromObject) => {
+            res.status(200).json({ contentFromObject });
+          })
+          .catch((err) => {
+            res.status(404).json({ status: 404, message: err });
+          });
+      });
     app.route('/minio/createBucket').post(async (req: Request, res: Response) => {
       this.minioController
         .createBucketIfDoesentExsist(req, res)

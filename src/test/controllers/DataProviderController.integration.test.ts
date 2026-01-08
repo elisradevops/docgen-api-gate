@@ -1,6 +1,6 @@
-import request from 'supertest';
 import axios from 'axios';
 import App from '../../app';
+import { withLocalAgent } from '../utils/localSupertest';
 
 jest.mock('axios', () => {
   const post = jest.fn();
@@ -36,11 +36,13 @@ describe('DataProviderController HTTP integration', () => {
 
     const app = createApp();
 
-    const res = await request(app)
-      .get('/azure/projects')
-      .set('x-ado-org-url', 'https://org')
-      .set('x-ado-pat', 'pat')
-      .expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent
+        .get('/azure/projects')
+        .set('x-ado-org-url', 'https://org')
+        .set('x-ado-pat', 'pat')
+        .expect(200)
+    );
 
     expect(res.body).toEqual({ items: ['p1'] });
     expect(ccPost).toHaveBeenCalledWith('/azure/projects', {
@@ -52,7 +54,7 @@ describe('DataProviderController HTTP integration', () => {
   test('GET /azure/projects returns 400 when credentials missing', async () => {
     const app = createApp();
 
-    const res = await request(app).get('/azure/projects').expect(400);
+    const res = await withLocalAgent(app, (agent) => agent.get('/azure/projects').expect(400));
 
     expect(res.body.message).toContain('Missing credentials');
     // Controller still constructs its axios client in the constructor,
@@ -66,12 +68,14 @@ describe('DataProviderController HTTP integration', () => {
 
     const app = createApp();
 
-    const res = await request(app)
-      .get('/azure/git/repos/r1/branches')
-      .query({ teamProjectId: 'tp1' })
-      .set('x-ado-org-url', 'https://org')
-      .set('x-ado-pat', 'pat')
-      .expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent
+        .get('/azure/git/repos/r1/branches')
+        .query({ teamProjectId: 'tp1' })
+        .set('x-ado-org-url', 'https://org')
+        .set('x-ado-pat', 'pat')
+        .expect(200)
+    );
 
     expect(res.body).toEqual({ branches: ['main'] });
     expect(ccPost).toHaveBeenCalledWith('/azure/git/repos/r1/branches', {
@@ -94,12 +98,14 @@ describe('DataProviderController HTTP integration', () => {
 
     const app = createApp();
 
-    const res = await request(app)
-      .get('/azure/queries')
-      .query({ teamProjectId: 'tp1', docType: 'STD', path: 'shared' })
-      .set('x-ado-org-url', 'https://org')
-      .set('x-ado-pat', 'pat')
-      .expect(502);
+    const res = await withLocalAgent(app, (agent) =>
+      agent
+        .get('/azure/queries')
+        .query({ teamProjectId: 'tp1', docType: 'STD', path: 'shared' })
+        .set('x-ado-org-url', 'https://org')
+        .set('x-ado-pat', 'pat')
+        .expect(502)
+    );
 
     expect(res.body).toEqual({
       message: 'Upstream error calling /azure/queries',

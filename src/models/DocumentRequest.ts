@@ -13,6 +13,9 @@ export interface DocumentRequest {
 export interface UploadProperties {
   bucketName: string;
   fileName: string;
+  createdBy?: string;
+  inputSummary?: string;
+  inputDetails?: string;
   AwsAccessKeyId: string;
   AwsSecretAccessKey: string;
   Region: string;
