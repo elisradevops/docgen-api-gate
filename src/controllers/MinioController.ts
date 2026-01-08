@@ -171,6 +171,41 @@ export class MinioController {
       );
     });
   }
+
+  public async getJSONContentFromObject(req: Request, res: Response) {
+    return new Promise((resolve, reject) => {
+      const bucketName = String(req.params.bucketName || '').trim();
+      const objectName = String((req.params as any).objectName || '').trim();
+      if (!bucketName || !objectName) {
+        return reject('bucketName and objectName are required');
+      }
+      const s3Client = this.initS3Client();
+      let miniData = '';
+
+      s3Client.getObject(bucketName, objectName, (err, dataStream) => {
+        if (err) {
+          logger.error(err);
+          return reject(`error due to ${err.code} - ${err.key}`);
+        }
+        dataStream.on('data', (chunk) => {
+          miniData += chunk;
+        });
+        dataStream.on('end', () => {
+          try {
+            const json = JSON.parse(miniData);
+            return resolve(json);
+          } catch (parseErr) {
+            logger.error(parseErr);
+            return reject('Failed to parse JSON content');
+          }
+        });
+        dataStream.on('error', (streamErr) => {
+          logger.error(streamErr);
+          return reject(streamErr);
+        });
+      });
+    });
+  }
   public async createBucketIfDoesentExsist(req: Request, res: Response) {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.body);
@@ -296,7 +331,34 @@ export class MinioController {
     }
 
     stream.on('data', (obj) => {
-      const fileName = obj.name?.includes('/') && !recurse ? obj.name.split('/').pop() : obj.name;
+      const rawPrefix = typeof obj?.prefix === 'string' ? String(obj.prefix).trim() : '';
+      const rawName = String(obj?.name || '').trim();
+      const isDocFormsRootListing = minioRequest.bucketName === 'document-forms' && docType === undefined && !recurse;
+
+      // listObjectsV2 can emit "prefix" entries without a name when not fully recursive.
+      // We need those for the "document-forms" root listing (to build doc type tabs),
+      // but they should not appear as rows in normal document/template listings.
+      if (!rawName && rawPrefix) {
+        if (isDocFormsRootListing) {
+          objects.push({ prefix: rawPrefix });
+        }
+        return;
+      }
+
+      if (rawName && rawName.endsWith('/')) {
+        if (isDocFormsRootListing) {
+          objects.push({ prefix: rawName });
+        }
+        return;
+      }
+
+      if (!rawName) return;
+      // Hide internal sidecar objects (full input snapshots) from normal listings.
+      if (rawName.includes('/__input__/') || rawName.startsWith('__input__/') || rawName.endsWith('.input.json')) {
+        return;
+      }
+      const fileName = rawName.includes('/') && !recurse ? rawName.split('/').pop() : rawName;
+      if (!fileName) return;
       obj.url = url + fileName;
 
       // Create a promise for each metadata fetch operation
@@ -304,11 +366,34 @@ export class MinioController {
         try {
           if (obj?.name) {
             const stat = await s3Client.statObject(minioRequest.bucketName, obj.name);
-            obj.createdBy = stat.metaData['createdBy'] || stat.metaData['createdby'] || '';
+            obj.createdBy =
+              stat.metaData['createdBy'] ||
+              stat.metaData['createdby'] ||
+              stat.metaData['x-amz-meta-createdBy'] ||
+              stat.metaData['x-amz-meta-createdby'] ||
+              '';
+            obj.inputSummary =
+              stat.metaData['inputSummary'] ||
+              stat.metaData['inputsummary'] ||
+              stat.metaData['x-amz-meta-inputSummary'] ||
+              stat.metaData['x-amz-meta-inputsummary'] ||
+              stat.metaData['input'] ||
+              stat.metaData['generationinput'] ||
+              '';
+            obj.inputDetailsKey =
+              stat.metaData['inputDetailsKey'] ||
+              stat.metaData['inputdetailskey'] ||
+              stat.metaData['x-amz-meta-inputDetailsKey'] ||
+              stat.metaData['x-amz-meta-inputdetailskey'] ||
+              stat.metaData['inputDetails'] ||
+              stat.metaData['inputdetails'] ||
+              '';
           }
         } catch (error) {
           logger.error(`Error fetching metadata for ${obj.name}:`, error);
           obj.createdBy = '';
+          obj.inputSummary = '';
+          obj.inputDetailsKey = '';
         }
         objects.push(obj);
       })();

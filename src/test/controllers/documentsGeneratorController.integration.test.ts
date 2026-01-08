@@ -1,6 +1,6 @@
-import request from 'supertest';
 import axios from 'axios';
 import App from '../../app';
+import { withLocalAgent } from '../utils/localSupertest';
 
 jest.mock('axios', () => {
   const post = jest.fn();
@@ -56,7 +56,7 @@ describe('DocumentsGeneratorController HTTP integration', () => {
     const appInstance = new App();
     const app = appInstance.app;
 
-    const res = await request(app).post('/jsonDocument/create').send(makeBody()).expect(200);
+    const res = await withLocalAgent(app, (agent) => agent.post('/jsonDocument/create').send(makeBody()).expect(200));
 
     expect(res.body).toEqual({ documentUrl: { url: 'http://doc' } });
 

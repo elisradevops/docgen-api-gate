@@ -1,7 +1,7 @@
-import request from 'supertest';
 import App from '../../app';
 import * as fs from 'fs';
 import * as path from 'path';
+import { withLocalAgent } from '../utils/localSupertest';
 
 describe('JsonDocRoutes', () => {
   beforeEach(() => {
@@ -43,7 +43,7 @@ describe('JsonDocRoutes', () => {
   test('GET /jsonDocument returns online status', async () => {
     const { app } = createAppAndRoutes();
 
-    const res = await request(app).get('/jsonDocument').expect(200);
+    const res = await withLocalAgent(app, (agent) => agent.get('/jsonDocument').expect(200));
 
     expect(res.body.status).toMatch(/online - /);
   });
@@ -54,7 +54,9 @@ describe('JsonDocRoutes', () => {
       .fn()
       .mockResolvedValue({ url: 'http://doc' });
 
-    const res = await request(app).post('/jsonDocument/create').send({ some: 'payload' }).expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/jsonDocument/create').send({ some: 'payload' }).expect(200)
+    );
 
     expect(routes.documentsGeneratorController.createJSONDoc).toHaveBeenCalled();
     expect(res.body).toEqual({ documentUrl: { url: 'http://doc' } });
@@ -64,7 +66,7 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.documentsGeneratorController as any).createJSONDoc = jest.fn().mockRejectedValue('boom-doc');
 
-    const res = await request(app).post('/jsonDocument/create').send({}).expect(500);
+    const res = await withLocalAgent(app, (agent) => agent.post('/jsonDocument/create').send({}).expect(500));
 
     expect(res.body.message).toContain('Failed to create the document');
     expect(res.body.error).toBe('boom-doc');
@@ -73,7 +75,7 @@ describe('JsonDocRoutes', () => {
   test('POST /minio/files/uploadFile without file returns 400', async () => {
     const { app } = createAppAndRoutes();
 
-    const res = await request(app).post('/minio/files/uploadFile').send({}).expect(400);
+    const res = await withLocalAgent(app, (agent) => agent.post('/minio/files/uploadFile').send({}).expect(400));
 
     expect(res.body).toEqual({ message: 'No file uploaded' });
   });
@@ -82,7 +84,7 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).getBucketFileList = jest.fn().mockResolvedValue([{ name: 'file1' }]);
 
-    const res = await request(app).get('/minio/bucketFileList/templates').expect(200);
+    const res = await withLocalAgent(app, (agent) => agent.get('/minio/bucketFileList/templates').expect(200));
 
     expect(routes.minioController.getBucketFileList).toHaveBeenCalled();
     expect(res.body).toEqual({ bucketFileList: [{ name: 'file1' }] });
@@ -92,7 +94,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).getJSONContentFromFile = jest.fn().mockResolvedValue({ foo: 'bar' });
 
-    const res = await request(app).get('/minio/contentFromFile/templates/proj/file.json').expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.get('/minio/contentFromFile/templates/proj/file.json').expect(200)
+    );
 
     expect(routes.minioController.getJSONContentFromFile).toHaveBeenCalled();
     expect(res.body).toEqual({ contentFromFile: { foo: 'bar' } });
@@ -102,7 +106,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).createBucketIfDoesentExsist = jest.fn().mockResolvedValue('ok');
 
-    const res = await request(app).post('/minio/createBucket').send({ bucketName: 'templates' }).expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/minio/createBucket').send({ bucketName: 'templates' }).expect(200)
+    );
 
     expect(routes.minioController.createBucketIfDoesentExsist).toHaveBeenCalled();
     expect(res.body).toEqual({ response: 'ok' });
@@ -112,7 +118,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).createBucketIfDoesentExsist = jest.fn().mockRejectedValue('boom-bucket');
 
-    const res = await request(app).post('/minio/createBucket').send({ bucketName: 'templates' }).expect(404);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/minio/createBucket').send({ bucketName: 'templates' }).expect(404)
+    );
 
     expect(res.body).toEqual({ status: 404, message: 'boom-bucket' });
   });
@@ -121,7 +129,7 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).createFavorite = jest.fn().mockRejectedValue('db-fail');
 
-    const res = await request(app).post('/dataBase/createFavorite').send({}).expect(500);
+    const res = await withLocalAgent(app, (agent) => agent.post('/dataBase/createFavorite').send({}).expect(500));
 
     expect(res.body.message).toContain('Failed to create/update favorite');
   });
@@ -134,11 +142,13 @@ describe('JsonDocRoutes', () => {
         res.status(200).json({ ok: true });
       });
 
-    const res = await request(app)
-      .get('/azure/projects')
-      .set('x-ado-org-url', 'https://org')
-      .set('x-ado-pat', 'pat')
-      .expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent
+        .get('/azure/projects')
+        .set('x-ado-org-url', 'https://org')
+        .set('x-ado-pat', 'pat')
+        .expect(200)
+    );
 
     expect(routes.dataProviderController.getTeamProjects).toHaveBeenCalled();
     expect(res.body).toEqual({ ok: true });
@@ -150,10 +160,9 @@ describe('JsonDocRoutes', () => {
       .fn()
       .mockResolvedValue({ fileItem: { name: 'f.docx' } });
 
-    const res = await request(app)
-      .post('/minio/files/uploadFile')
-      .attach('file', Buffer.from('dummy'), 'file.docx')
-      .expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/minio/files/uploadFile').attach('file', Buffer.from('dummy'), 'file.docx').expect(200)
+    );
 
     expect(routes.minioController.uploadFile).toHaveBeenCalled();
     expect(res.body).toEqual({ message: 'File uploaded successfully', fileItem: { name: 'f.docx' } });
@@ -163,10 +172,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).uploadFile = jest.fn().mockRejectedValue('upload-fail');
 
-    const res = await request(app)
-      .post('/minio/files/uploadFile')
-      .attach('file', Buffer.from('dummy'), 'file.docx')
-      .expect(500);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/minio/files/uploadFile').attach('file', Buffer.from('dummy'), 'file.docx').expect(500)
+    );
 
     expect(routes.minioController.uploadFile).toHaveBeenCalled();
     expect(res.body.message).toContain('File upload failed');
@@ -177,7 +185,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).deleteFile = jest.fn().mockResolvedValue('deleted');
 
-    const res = await request(app).delete('/minio/files/deleteFile/templates/proj/etag123').expect(200);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.delete('/minio/files/deleteFile/templates/proj/etag123').expect(200)
+    );
 
     expect(routes.minioController.deleteFile).toHaveBeenCalled();
     expect(res.body).toEqual({ response: 'deleted' });
@@ -187,7 +197,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).deleteFile = jest.fn().mockRejectedValue('delete-fail');
 
-    const res = await request(app).delete('/minio/files/deleteFile/templates/proj/etag123').expect(500);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.delete('/minio/files/deleteFile/templates/proj/etag123').expect(500)
+    );
 
     expect(routes.minioController.deleteFile).toHaveBeenCalled();
     expect(res.body.message).toContain('Failed to delete the file');
@@ -198,7 +210,7 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).getBucketFileList = jest.fn().mockRejectedValue('bucket-fail');
 
-    const res = await request(app).get('/minio/bucketFileList/templates').expect(500);
+    const res = await withLocalAgent(app, (agent) => agent.get('/minio/bucketFileList/templates').expect(500));
 
     expect(routes.minioController.getBucketFileList).toHaveBeenCalled();
     expect(res.body.message).toContain('Error Occurred while fetching files from bucket');
@@ -209,7 +221,9 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.minioController as any).getJSONContentFromFile = jest.fn().mockRejectedValue('not-found');
 
-    const res = await request(app).get('/minio/contentFromFile/templates/proj/file.json').expect(404);
+    const res = await withLocalAgent(app, (agent) =>
+      agent.get('/minio/contentFromFile/templates/proj/file.json').expect(404)
+    );
 
     expect(routes.minioController.getJSONContentFromFile).toHaveBeenCalled();
     expect(res.body).toEqual({ status: 404, message: 'not-found' });
@@ -221,7 +235,7 @@ describe('JsonDocRoutes', () => {
       res.status(200).json({ favorites: [] });
     });
 
-    const res = await request(app).get('/dataBase/getFavorites').expect(200);
+    const res = await withLocalAgent(app, (agent) => agent.get('/dataBase/getFavorites').expect(200));
 
     expect(routes.dataBaseController.getFavorites).toHaveBeenCalled();
     expect(res.body).toEqual({ favorites: [] });
@@ -231,7 +245,7 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).getFavorites = jest.fn().mockRejectedValue('fav-fail');
 
-    const res = await request(app).get('/dataBase/getFavorites').expect(500);
+    const res = await withLocalAgent(app, (agent) => agent.get('/dataBase/getFavorites').expect(500));
 
     expect(res.body.message).toContain('Failed to retrieve favorites');
     expect(res.body.error).toBe('fav-fail');
@@ -243,7 +257,7 @@ describe('JsonDocRoutes', () => {
       res.status(200).json({ ok: true });
     });
 
-    const res = await request(app).delete('/dataBase/deleteFavorite/123').expect(200);
+    const res = await withLocalAgent(app, (agent) => agent.delete('/dataBase/deleteFavorite/123').expect(200));
 
     expect(routes.dataBaseController.deleteFavorite).toHaveBeenCalled();
     expect(res.body).toEqual({ ok: true });
@@ -253,7 +267,7 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).deleteFavorite = jest.fn().mockRejectedValue('del-fail');
 
-    const res = await request(app).delete('/dataBase/deleteFavorite/123').expect(500);
+    const res = await withLocalAgent(app, (agent) => agent.delete('/dataBase/deleteFavorite/123').expect(500));
 
     expect(res.body.message).toContain('Failed to delete favorite');
     expect(res.body.error).toBe('del-fail');
@@ -293,7 +307,7 @@ describe('JsonDocRoutes', () => {
         res.status(200).json({ route: c.handler });
       });
 
-      const res = await request(app)[c.method](c.path).expect(200);
+      const res = await withLocalAgent(app, (agent) => agent[c.method](c.path).expect(200));
 
       expect(dp[c.handler]).toHaveBeenCalled();
       expect(res.body).toEqual({ route: c.handler });
@@ -332,15 +346,17 @@ describe('JsonDocRoutes', () => {
       res.status(200).json({ ok: 'getAllConfigs' });
     });
 
-    await request(app).post('/sharepoint/test-connection').expect(200);
-    await request(app).post('/sharepoint/list-files').expect(200);
-    await request(app).post('/sharepoint/check-conflicts').expect(200);
-    await request(app).post('/sharepoint/sync-templates').expect(200);
-    await request(app).post('/sharepoint/config').expect(200);
-    await request(app).get('/sharepoint/config').expect(200);
-    await request(app).delete('/sharepoint/config').expect(200);
-    await request(app).get('/sharepoint/configs').expect(200);
-    await request(app).get('/sharepoint/configs/all').expect(200);
+    await withLocalAgent(app, async (agent) => {
+      await agent.post('/sharepoint/test-connection').expect(200);
+      await agent.post('/sharepoint/list-files').expect(200);
+      await agent.post('/sharepoint/check-conflicts').expect(200);
+      await agent.post('/sharepoint/sync-templates').expect(200);
+      await agent.post('/sharepoint/config').expect(200);
+      await agent.get('/sharepoint/config').expect(200);
+      await agent.delete('/sharepoint/config').expect(200);
+      await agent.get('/sharepoint/configs').expect(200);
+      await agent.get('/sharepoint/configs/all').expect(200);
+    });
 
     expect(sp.testConnection).toHaveBeenCalled();
     expect(sp.listFiles).toHaveBeenCalled();
