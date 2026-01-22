@@ -54,7 +54,9 @@ export class MinioController {
       const s3Client = this.initS3Client();
       let url = '';
       this.standardizeRequest(minioRequest);
-      let suffix = `${bucketName}/${minioRequest.folderName}/${minioRequest.fileName}`;
+      const objectName = `${minioRequest.folderName}/${minioRequest.fileName}`;
+      const encodedObjectName = this.encodeObjectPath(objectName);
+      let suffix = `${bucketName}/${encodedObjectName}`;
       if (isExternalUrl === true) {
         url = `${process.env.minioPublicEndPoint}/${suffix}`;
       } else {
@@ -64,8 +66,6 @@ export class MinioController {
       const filePath = path.resolve(req.file.path);
       const fileStream = fs.createReadStream(filePath);
       const fileStat = fs.statSync(filePath);
-      // Define the object name (file path in the Minio bucket)
-      const objectName = `${minioRequest.folderName}/${minioRequest.fileName}`;
       // Ensure the bucket exists before uploading the file
       s3Client
         .bucketExists(minioRequest.bucketName)
@@ -304,6 +304,13 @@ export class MinioController {
     return url;
   }
 
+  private encodeObjectPath(objectPath: string) {
+    return String(objectPath || '')
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+  }
+
   private handleStream(
     s3Client: any,
     req: Request,
@@ -359,7 +366,7 @@ export class MinioController {
       }
       const fileName = rawName.includes('/') && !recurse ? rawName.split('/').pop() : rawName;
       if (!fileName) return;
-      obj.url = url + fileName;
+      obj.url = url + this.encodeObjectPath(fileName);
 
       // Create a promise for each metadata fetch operation
       const metadataPromise = (async () => {
