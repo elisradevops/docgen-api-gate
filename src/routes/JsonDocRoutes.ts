@@ -97,6 +97,16 @@ export class Routes {
             res.status(404).json({ status: 404, message: err });
           });
       });
+    app.route('/minio/download/:bucketName/:objectName(*)').get(async (req: Request, res: Response) => {
+      this.minioController
+        .downloadFile(req, res)
+        .then(() => {
+          // downloadFile streams the response directly
+        })
+        .catch((err) => {
+          res.status(404).json({ status: 404, message: err });
+        });
+    });
     app.route('/minio/createBucket').post(async (req: Request, res: Response) => {
       this.minioController
         .createBucketIfDoesentExsist(req, res)
@@ -197,7 +207,7 @@ export class Routes {
     app
       .route('/azure/pipelines/releases/definitions/:definitionId/history')
       .get((req: Request, res: Response) =>
-        this.dataProviderController.getReleaseDefinitionHistory(req, res)
+        this.dataProviderController.getReleaseDefinitionHistory(req, res),
       );
     app
       .route('/azure/work-item-types')
@@ -207,29 +217,29 @@ export class Routes {
     app
       .route('/sharepoint/test-connection')
       .post((req: Request, res: Response) => this.sharePointController.testConnection(req, res));
-    
+
     app
       .route('/sharepoint/list-files')
       .post((req: Request, res: Response) => this.sharePointController.listFiles(req, res));
-    
+
     app
       .route('/sharepoint/check-conflicts')
       .post((req: Request, res: Response) => this.sharePointController.checkConflicts(req, res));
-    
+
     app
       .route('/sharepoint/sync-templates')
       .post((req: Request, res: Response) => this.sharePointController.syncTemplates(req, res));
-    
+
     app
       .route('/sharepoint/config')
       .post((req: Request, res: Response) => this.sharePointController.saveConfig(req, res))
       .get((req: Request, res: Response) => this.sharePointController.getConfig(req, res))
       .delete((req: Request, res: Response) => this.sharePointController.deleteConfig(req, res));
-    
+
     app
       .route('/sharepoint/configs')
       .get((req: Request, res: Response) => this.sharePointController.getConfigs(req, res));
-    
+
     app
       .route('/sharepoint/configs/all')
       .get((req: Request, res: Response) => this.sharePointController.getAllConfigs(req, res));
