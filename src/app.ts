@@ -1,6 +1,5 @@
 import express from 'express';
-import * as bodyParser from 'body-parser';
-import cors from 'cors';
+import cors, { CorsOptions } from 'cors';
 import { Routes } from './routes/JsonDocRoutes';
 import { injectRootSpan } from './helpers/openTracing/tracer-middleware';
 import multer from 'multer'; // Import multer
@@ -13,14 +12,35 @@ export default class App {
   constructor() {
     this.app = express();
     this.config();
-    this.app.use(cors());
-    this.app.use(express.json());
+    const corsOptions = this.createCorsOptions();
+    this.app.use(cors(corsOptions));
+    this.app.options('*', cors(corsOptions));
     this.app.use(injectRootSpan);
     this.routePrv.routes(this.app, this.upload); // Pass multer instance to routes
   }
 
   private config(): void {
-    this.app.use(bodyParser.json());
-    this.app.use(bodyParser.urlencoded({ extended: false }));
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: false }));
+  }
+
+  private createCorsOptions(): CorsOptions {
+    const allowedOrigins = String(process.env.CORS_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+    const allowAllOrigins = !allowedOrigins.length || allowedOrigins.includes('*');
+    return {
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowAllOrigins || allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error(`CORS blocked for origin: ${origin}`));
+      },
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'X-Ado-Org-Url', 'X-Ado-PAT'],
+      optionsSuccessStatus: 204,
+    };
   }
 }

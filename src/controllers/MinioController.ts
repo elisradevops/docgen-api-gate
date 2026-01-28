@@ -8,6 +8,38 @@ import path from 'path';
 var Minio = require('minio');
 
 export class MinioController {
+  private getContentType(fileName: string) {
+    const lower = String(fileName || '').toLowerCase();
+    if (lower.endsWith('.docx')) {
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+    if (lower.endsWith('.doc')) {
+      return 'application/msword';
+    }
+    if (lower.endsWith('.dotx')) {
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.template';
+    }
+    if (lower.endsWith('.dot')) {
+      return 'application/msword';
+    }
+    if (lower.endsWith('.pdf')) {
+      return 'application/pdf';
+    }
+    if (lower.endsWith('.xlsx')) {
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+    if (lower.endsWith('.xls')) {
+      return 'application/vnd.ms-excel';
+    }
+    if (lower.endsWith('.csv')) {
+      return 'text/csv';
+    }
+    if (lower.endsWith('.json')) {
+      return 'application/json';
+    }
+    return 'application/octet-stream';
+  }
+
   public async getBucketFileList(req: Request, res: Response) {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.params);
@@ -203,6 +235,41 @@ export class MinioController {
           logger.error(streamErr);
           return reject(streamErr);
         });
+      });
+    });
+  }
+
+  public async downloadFile(req: Request, res: Response) {
+    return new Promise((resolve, reject) => {
+      const bucketName = String(req.params.bucketName || '').trim();
+      const rawObjectName = String((req.params as any).objectName || '').trim();
+      if (!bucketName || !rawObjectName) {
+        return reject('bucketName and objectName are required');
+      }
+      const s3Client = this.initS3Client();
+      let objectName = rawObjectName;
+      try {
+        objectName = decodeURIComponent(rawObjectName);
+      } catch {
+        // leave as-is if decoding fails
+      }
+      s3Client.getObject(bucketName, objectName, (err, dataStream) => {
+        if (err) {
+          logger.error(err);
+          return reject(`error due to ${err.code} - ${err.key}`);
+        }
+        const fileName = objectName.split('/').pop() || 'file';
+        res.status(200);
+        res.setHeader('Content-Type', this.getContentType(fileName));
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+        dataStream.on('end', () => {
+          resolve(undefined);
+        });
+        dataStream.on('error', (streamErr) => {
+          logger.error(streamErr);
+          reject(streamErr);
+        });
+        dataStream.pipe(res);
       });
     });
   }
