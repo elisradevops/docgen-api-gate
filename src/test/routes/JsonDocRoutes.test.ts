@@ -72,6 +72,34 @@ describe('JsonDocRoutes', () => {
     expect(res.body.error).toBe('boom-doc');
   });
 
+  test('POST /jsonDocument/create-test-reporter-flat returns documentUrl on success', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.documentsGeneratorController as any).createFlatTestReporterDoc = jest
+      .fn()
+      .mockResolvedValue({ url: 'http://flat-doc' });
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/jsonDocument/create-test-reporter-flat').send({ some: 'payload' }).expect(200)
+    );
+
+    expect(routes.documentsGeneratorController.createFlatTestReporterDoc).toHaveBeenCalled();
+    expect(res.body).toEqual({ documentUrl: { url: 'http://flat-doc' } });
+  });
+
+  test('POST /jsonDocument/create-test-reporter-flat returns 500 when controller rejects', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.documentsGeneratorController as any).createFlatTestReporterDoc = jest
+      .fn()
+      .mockRejectedValue('boom-flat');
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/jsonDocument/create-test-reporter-flat').send({}).expect(500)
+    );
+
+    expect(res.body.message).toContain('Failed to create the flat test reporter document');
+    expect(res.body.error).toBe('boom-flat');
+  });
+
   test('POST /minio/files/uploadFile without file returns 400', async () => {
     const { app } = createAppAndRoutes();
 
