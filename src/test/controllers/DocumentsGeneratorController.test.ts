@@ -149,4 +149,88 @@ describe('DocumentsGeneratorController', () => {
 
     await expect(controller.createJSONDoc(req, res)).rejects.toEqual('json-to-word failed');
   });
+
+  function makeFlatReq(overrides: any = {}) {
+    return {
+      body: {
+        tfsCollectionUri: 'https://org',
+        PAT: 'pat',
+        teamProjectName: 'project',
+        templateFile: '',
+        formattingSettings: {},
+        uploadProperties: { bucketName: 'ATTACH_MENTS' },
+        contentControls: [
+          {
+            title: 'test-reporter-flat-content-control',
+            type: 'testReporterFlat',
+            headingLevel: 1,
+            data: { testPlanId: 12 },
+          },
+        ],
+        ...overrides,
+      },
+    } as any;
+  }
+
+  test('flat test reporter flow resolves with document URL', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { flat: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://excel-doc' } });
+
+    const req = makeFlatReq();
+    const res = buildRes();
+
+    const result = await controller.createFlatTestReporterDoc(req, res);
+    expect(result).toEqual({ url: 'http://excel-doc' });
+    expect(axios.post).toHaveBeenNthCalledWith(
+      1,
+      'http://cc/generate-test-reporter-flat',
+      expect.objectContaining({ orgUrl: 'https://org', token: 'pat', projectName: 'project' })
+    );
+    expect(axios.post.mock.calls[1][0]).toBe('http://jw/api/excel/create');
+  });
+
+  test('flat test reporter normalizes bucket name and fills upload properties', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { flat: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://excel-doc' } });
+
+    const req = makeFlatReq({ uploadProperties: { bucketName: 'ATTACH_MENTS ' } });
+    const res = buildRes();
+
+    const result = await controller.createFlatTestReporterDoc(req, res);
+    expect(result).toEqual({ url: 'http://excel-doc' });
+
+    const firstCallBody = axios.post.mock.calls[0][1];
+    expect(firstCallBody).toEqual(
+      expect.objectContaining({
+        minioEndPoint: 'http://minio',
+        minioAccessKey: 'user',
+        minioSecretKey: 'pass',
+      })
+    );
+
+    const secondCallBody = axios.post.mock.calls[1][1];
+    expect(secondCallBody.uploadProperties.bucketName).toBe('attach-ments');
+  });
+
+  test('flat test reporter upstream error rejects with message', async () => {
+    axios.post.mockRejectedValueOnce({ response: { data: { message: 'flat cc failed' } } });
+
+    const req = makeFlatReq();
+    const res = buildRes();
+
+    await expect(controller.createFlatTestReporterDoc(req, res)).rejects.toEqual('flat cc failed');
+  });
+
+  test('flat test reporter json-to-word error rejects with message', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { flat: true } })
+      .mockRejectedValueOnce({ response: { data: { message: 'flat excel failed' } } });
+
+    const req = makeFlatReq();
+    const res = buildRes();
+
+    await expect(controller.createFlatTestReporterDoc(req, res)).rejects.toEqual('flat excel failed');
+  });
 });

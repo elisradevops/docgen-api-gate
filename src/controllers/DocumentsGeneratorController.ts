@@ -90,4 +90,86 @@ export class DocumentsGeneratorController {
       }
     });
   }
+
+  public async createFlatTestReporterDoc(req: Request, res: Response): Promise<any> {
+    return new Promise(async (resolve, reject) => {
+      try {
+        let json = JSON.stringify(req.body);
+        let documentRequest: DocumentRequest = JSON.parse(json);
+        if (!documentRequest.uploadProperties.AwsAccessKeyId) {
+          documentRequest.uploadProperties.AwsAccessKeyId = process.env.MINIO_ROOT_USER;
+        }
+        if (!documentRequest.uploadProperties.AwsSecretAccessKey) {
+          documentRequest.uploadProperties.AwsSecretAccessKey = process.env.MINIO_ROOT_PASSWORD;
+        }
+        if (!documentRequest.uploadProperties.Region) {
+          documentRequest.uploadProperties.Region = process.env.MINIO_REGION;
+        }
+        if (!documentRequest.uploadProperties.ServiceUrl) {
+          documentRequest.uploadProperties.ServiceUrl = process.env.MINIOSERVER;
+        }
+        documentRequest.uploadProperties.bucketName =
+          documentRequest.uploadProperties.bucketName.toLowerCase();
+        documentRequest.uploadProperties.bucketName = documentRequest.uploadProperties.bucketName.replace(
+          '_',
+          '-'
+        );
+        documentRequest.uploadProperties.bucketName = documentRequest.uploadProperties.bucketName.replace(
+          ' ',
+          ''
+        );
+
+        try {
+          const contentControls = await Promise.all(
+            documentRequest.contentControls.map(async (contentControl) => {
+              let contentControlResponse = await axios.post(
+                `${process.env.dgContentControlUrl}/generate-test-reporter-flat`,
+                {
+                  orgUrl: documentRequest.tfsCollectionUri,
+                  token: documentRequest.PAT,
+                  projectName: documentRequest.teamProjectName,
+                  outputType: 'json',
+                  templateUrl: documentRequest.templateFile,
+                  minioEndPoint: documentRequest.uploadProperties.ServiceUrl,
+                  minioAccessKey: documentRequest.uploadProperties.AwsAccessKeyId,
+                  minioSecretKey: documentRequest.uploadProperties.AwsSecretAccessKey,
+                  attachmentsBucketName: 'attachments',
+                  contentControlOptions: {
+                    title: contentControl.title,
+                    type: contentControl.type,
+                    headingLevel: contentControl.headingLevel,
+                    data: contentControl.data,
+                    isExcelSpreadsheet: true,
+                  },
+                  formattingSettings: documentRequest.formattingSettings,
+                }
+              );
+              return contentControlResponse.data;
+            })
+          );
+
+          const excelModel = {
+            uploadProperties: documentRequest.uploadProperties,
+            JsonDataList: contentControls,
+            minioAttachmentData: [],
+            formattingSettings: documentRequest.formattingSettings,
+          };
+
+          let documentUrl: any = await axios.post(
+            `${process.env.jsonToWordPostUrl}/api/excel/create`,
+            excelModel
+          );
+          return resolve(documentUrl.data);
+        } catch (err) {
+          if (err.response) {
+            const responseError = err.response.data;
+            throw new Error(responseError.message);
+          }
+          throw err;
+        }
+      } catch (err) {
+        return reject(err.message);
+      }
+    });
+  }
 }
