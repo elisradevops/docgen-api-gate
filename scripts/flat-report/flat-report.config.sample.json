@@ -1,0 +1,25 @@
+{
+  "apiBaseUrl": "http://localhost:30001",
+  "adoOrgUrl": "https://dev.azure.com/your-org/",
+  "projectName": "YourProject",
+  "pat": "YOUR_PAT_HERE",
+  "testPlanId": 123,
+  "outputDir": "\\\\stel01\\edenTest\\TestPlans",
+  "fileName": "TestPlan.xlsx",
+  "bucketName": "",
+  "subSystemField": "Custom.SubSystem",
+  "assignedToField": "System.AssignedTo",
+  "stateField": "System.State",
+  "logDir": "\\\\stel01\\edenTest\\TestPlans\\logs\\flat-report",
+  "disableOnInvalid": true,
+  "schedule": {
+    "enabled": true,
+    "time": "06:00",
+    "taskName": "DocGenFlatReport",
+    "runIfLoggedOff": false,
+    "runAsUser": "",
+    "runOnMissed": true,
+    "intervalMinutes": 0,
+    "durationHours": 24
+  }
+}

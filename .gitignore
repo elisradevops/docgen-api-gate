@@ -72,3 +72,6 @@ junit.xml
 
 # Multer upload temp directory
 uploads/
+
+# Flat report local config (contains secrets)
+scripts/flat-report/flat-report.config.json

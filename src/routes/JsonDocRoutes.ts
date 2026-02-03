@@ -31,6 +31,19 @@ export class Routes {
           });
         });
     });
+    app.route('/jsonDocument/create-test-reporter-flat').post(async (req: Request, res: Response) => {
+      this.documentsGeneratorController
+        .createFlatTestReporterDoc(req, res)
+        .then((documentUrl) => {
+          res.status(200).json({ documentUrl });
+        })
+        .catch((err) => {
+          res.status(500).json({
+            message: `Failed to create the flat test reporter document ${err}`,
+            error: err,
+          });
+        });
+    });
     // Add the file upload route for template uploading
     app.route('/minio/files/uploadFile').post(upload.single('file'), async (req: Request, res: Response) => {
       // Call the uploadFile method from MinioController
