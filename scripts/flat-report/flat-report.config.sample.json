@@ -11,6 +11,8 @@
   "assignedToField": "System.AssignedTo",
   "stateField": "System.State",
   "logDir": "\\\\stel01\\edenTest\\TestPlans\\logs\\flat-report",
+  "logRetentionDays": 7,
+  "logMaxFileSizeMB": 5,
   "disableOnInvalid": true,
   "schedule": {
     "enabled": true,

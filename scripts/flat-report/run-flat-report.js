@@ -44,6 +44,65 @@ const ensureDir = async (dir) => {
   await fsp.mkdir(dir, { recursive: true });
 };
 
+const resolveRetentionDays = (config) => {
+  const raw = Number(config.logRetentionDays);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return 7;
+};
+
+const resolveMaxLogFileBytes = (config) => {
+  const raw = Number(config.logMaxFileSizeMB);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return Math.floor(raw * 1024 * 1024);
+};
+
+const pruneOldLogs = async (dir, retentionDays) => {
+  if (!retentionDays || retentionDays <= 0) return;
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  try {
+    const entries = await fsp.readdir(dir);
+    await Promise.all(
+      entries.map(async (name) => {
+        if (!/^flat-report-\d{8}\.log(?:\.\d+)?$/.test(name)) return;
+        const fullPath = path.join(dir, name);
+        try {
+          const stat = await fsp.stat(fullPath);
+          if (stat.mtimeMs < cutoff) {
+            await fsp.unlink(fullPath);
+          }
+        } catch {
+          /* ignore */
+        }
+      })
+    );
+  } catch {
+    /* ignore */
+  }
+};
+
+const rotateLogIfNeeded = (logFile, maxBytes) => {
+  if (!maxBytes) return;
+  try {
+    const stat = fs.statSync(logFile);
+    if (stat.size < maxBytes) return;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    return;
+  }
+
+  let index = 1;
+  let rotated = `${logFile}.${index}`;
+  while (fs.existsSync(rotated)) {
+    index += 1;
+    rotated = `${logFile}.${index}`;
+  }
+  try {
+    fs.renameSync(logFile, rotated);
+  } catch {
+    /* ignore */
+  }
+};
+
 const resolveLogDir = (config) => {
   if (config.logDir) return config.logDir;
   if (config.outputDir) {
@@ -55,9 +114,12 @@ const resolveLogDir = (config) => {
 const createLogger = async (config) => {
   const resolvedLogDir = resolveLogDir(config);
   await ensureDir(resolvedLogDir);
+  await pruneOldLogs(resolvedLogDir, resolveRetentionDays(config));
   const logFile = path.join(resolvedLogDir, `flat-report-${dateStamp}.log`);
+  const maxLogBytes = resolveMaxLogFileBytes(config);
 
   const write = (level, message, meta) => {
+    rotateLogIfNeeded(logFile, maxLogBytes);
     const ts = new Date().toISOString();
     const suffix = meta ? ` ${JSON.stringify(meta)}` : '';
     const line = `[${ts}] [${level}] ${message}${suffix}\n`;

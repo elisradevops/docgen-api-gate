@@ -43,6 +43,8 @@ Optional fields (safe to leave as-is):
 - `assignedToField` (default `System.AssignedTo`)
 - `stateField` (default `System.State`)
 - `logDir` (recommended inside your output folder, e.g. `\\\\stel01\\edenTest\\TestPlans\\logs\\flat-report`)
+- `logRetentionDays` (default `7`, set `0` to disable cleanup)
+- `logMaxFileSizeMB` (set to a number to rotate daily logs when they get large; `0` disables)
 - `disableOnInvalid` (default `true`)
 - `schedule` (for Windows Task Scheduler helper)
 
@@ -58,6 +60,8 @@ Example (macOS local testing):
   "outputDir": "/Users/your-user/Desktop/TestPlans",
   "fileName": "TestPlan.xlsx",
   "logDir": "./logs/flat-report",
+  "logRetentionDays": 7,
+  "logMaxFileSizeMB": 5,
   "disableOnInvalid": true
 }
 ```
@@ -74,6 +78,8 @@ Example (Windows share):
   "outputDir": "\\\\stel01\\edenTest\\TestPlans",
   "fileName": "TestPlan.xlsx",
   "logDir": "\\\\stel01\\edenTest\\TestPlans\\logs\\flat-report",
+  "logRetentionDays": 7,
+  "logMaxFileSizeMB": 5,
   "disableOnInvalid": true,
   "schedule": {
     "enabled": true,
