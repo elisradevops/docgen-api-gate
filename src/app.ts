@@ -7,7 +7,10 @@ import multer from 'multer'; // Import multer
 export default class App {
   public app: express.Application;
   public routePrv: Routes = new Routes();
-  private upload = multer({ dest: 'uploads/' }); // Configure multer with the destination folder
+  private upload = multer({
+    dest: 'uploads/',
+    limits: { fileSize: Number(process.env.UPLOAD_MAX_FILE_SIZE_BYTES || 50 * 1024 * 1024) },
+  }); // Configure multer with destination and file size cap
 
   constructor() {
     this.app = express();
