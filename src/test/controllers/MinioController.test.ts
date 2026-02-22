@@ -234,7 +234,8 @@ describe('MinioController', () => {
   test('uploadFile: success path uploads and unlinks temp file', async () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(true);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(null, { etag: 'etag-1' })
     );
 
@@ -365,7 +366,8 @@ describe('MinioController', () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(false);
     mockS3.makeBucket.mockResolvedValueOnce(undefined);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(null, { etag: 'etag-2' })
     );
 
@@ -387,7 +389,8 @@ describe('MinioController', () => {
   test('uploadFile: upload error rejects', async () => {
     mockS3.bucketExists.mockResolvedValueOnce(true);
     const uploadError = new Error('upload failed');
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(uploadError)
     );
 
@@ -489,7 +492,8 @@ describe('MinioController', () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(true);
     mockS3.setBucketLifecycle.mockResolvedValueOnce(undefined);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(null, { etag: 'mewp-etag-1' })
     );
 
@@ -526,6 +530,7 @@ describe('MinioController', () => {
       'MEWP/mewp-external-ingestion/bugs/bugs.csv',
       expect.anything(),
       expect.any(Number),
+      expect.any(Object),
       expect.any(Function)
     );
     expect(result.fileItem.sourceType).toBe('mewpExternalIngestion');
@@ -538,7 +543,8 @@ describe('MinioController', () => {
     process.env.MEWP_EXTERNAL_INGESTION_BUCKET = 'my-mewp-bucket';
     mockS3.bucketExists.mockResolvedValueOnce(true);
     mockS3.setBucketLifecycle.mockResolvedValueOnce(undefined);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(null, { etag: 'mewp-etag-2' })
     );
 
