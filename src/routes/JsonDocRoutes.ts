@@ -24,8 +24,9 @@ export class Routes {
           res.status(200).json({ documentUrl });
         })
         .catch((err) => {
-          res.status(500).json({
-            message: `Failed to create the document ${err}`,
+          const statusCode = Number(err?.statusCode || 500);
+          res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+            message: `Failed to create the document ${err?.message || err}`,
             //Error not structured correctly
             error: err,
           });
@@ -38,9 +39,26 @@ export class Routes {
           res.status(200).json({ documentUrl });
         })
         .catch((err) => {
-          res.status(500).json({
-            message: `Failed to create the flat test reporter document ${err}`,
+          const statusCode = Number(err?.statusCode || 500);
+          res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+            message: `Failed to create the flat test reporter document ${err?.message || err}`,
             error: err,
+          });
+        });
+    });
+
+    app.route('/jsonDocument/validate-mewp-external-files').post(async (req: Request, res: Response) => {
+      this.documentsGeneratorController
+        .validateMewpExternalFiles(req, res)
+        .then((result) => {
+          res.status(200).json(result);
+        })
+        .catch((err) => {
+          const statusCode = Number(err?.statusCode || 500);
+          res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+            message: err?.message || 'Failed validating MEWP external files',
+            code: err?.code,
+            details: err?.details,
           });
         });
     });
@@ -57,7 +75,10 @@ export class Routes {
           res.status(200).json({ message: 'File uploaded successfully', fileItem });
         })
         .catch((err) => {
-          res.status(500).json({ message: `File upload failed: ${err}`, error: err });
+          const statusCode = Number(err?.statusCode || 500);
+          res
+            .status(statusCode >= 400 && statusCode < 600 ? statusCode : 500)
+            .json({ message: `File upload failed: ${err?.message || err}`, code: err?.code, error: err });
         });
     });
 
