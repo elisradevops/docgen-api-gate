@@ -184,6 +184,49 @@ describe('DocumentsGeneratorController', () => {
     );
   });
 
+  test('MEWP standalone appends request timestamp to output file names', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({
+        data: {
+          FileName: 'mewp-l2-coverage-report-2026-02-23-11-50-11.xlsx',
+          Base64: Buffer.from('main-excel').toString('base64'),
+          ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        },
+      });
+    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+
+    const req = makeReq({
+      uploadProperties: {
+        bucketName: 'ATTACH_MENTS',
+        fileName: 'MEWP-Test-Reporter-2026-02-23-11:50:11.xlsx',
+        enableDirectDownload: true,
+      },
+      contentControls: [
+        {
+          title: 'mewp-l2-implementation-content-control',
+          type: 'mewpStandaloneReporter',
+          headingLevel: 2,
+          data: { testPlanId: 34, includeInternalValidationReport: false },
+        },
+      ],
+    });
+
+    const result = await controller.createJSONDoc(req, buildRes());
+    expect(result).toEqual(
+      expect.objectContaining({
+        FileName: 'mewp-l2-coverage-report-2026-02-23-11-50-11.xlsx',
+      })
+    );
+    expect(axios.post.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        uploadProperties: expect.objectContaining({
+          fileName: 'mewp-l2-coverage-report-2026-02-23-11-50-11.xlsx',
+        }),
+      })
+    );
+  });
+
   test('json-to-word service error transforms and rejects with message', async () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
@@ -364,7 +407,6 @@ describe('DocumentsGeneratorController', () => {
             title: 'mewp-internal-validation-content-control',
             data: expect.objectContaining({
               includeInternalValidationReport: true,
-              useRelFallback: true,
             }),
           })
         );
@@ -473,7 +515,6 @@ describe('DocumentsGeneratorController', () => {
             testPlanId: 34,
             testSuiteArray: [101],
             includeInternalValidationReport: true,
-            useRelFallback: true,
           },
         },
       ],

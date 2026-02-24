@@ -251,7 +251,6 @@ describe('DocumentsGeneratorController HTTP integration', () => {
             testPlanId: 123,
             testSuiteArray: [456],
             includeInternalValidationReport: true,
-            useRelFallback: true,
           },
           isExcelSpreadsheet: true,
         },

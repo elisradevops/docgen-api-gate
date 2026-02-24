@@ -314,16 +314,20 @@ export class DocumentsGeneratorController {
     zipFileName: string;
   } {
     const baseName = this.getBaseFileName(rawBaseName);
+    const timestampSuffix = this.getRequestTimestampSuffix(rawBaseName);
     const mewpRoot = /(?:^|-)mewp(?:-|$)/i.test(baseName) ? baseName : `${baseName}-mewp`;
     const normalize = (value: string) =>
       String(value || '')
         .replace(/-+/g, '-')
         .replace(/^-+|-+$/g, '');
     const zipBase = normalize(`${mewpRoot}-reports`);
+    const timestampToken = timestampSuffix.replace(/^-/, '');
+    const zipBaseWithTimestamp =
+      timestampToken && !zipBase.includes(timestampToken) ? `${zipBase}${timestampSuffix}` : zipBase;
     return {
-      mainExcelFileName: `mewp-l2-coverage-report.xlsx`,
-      internalValidationFileName: `mewp-internal-validation-report.xlsx`,
-      zipFileName: `${zipBase}.zip`,
+      mainExcelFileName: `mewp-l2-coverage-report${timestampSuffix}.xlsx`,
+      internalValidationFileName: `mewp-internal-validation-report${timestampSuffix}.xlsx`,
+      zipFileName: `${zipBaseWithTimestamp}.zip`,
     };
   }
 
@@ -353,10 +357,6 @@ export class DocumentsGeneratorController {
             headingLevel: contentControl.headingLevel,
             data: {
               ...contentControl.data,
-              useRelFallback:
-                String(contentControl?.type || '').toLowerCase() === 'mewpstandalonereporter'
-                  ? contentControl?.data?.useRelFallback !== false
-                  : false,
             },
             isExcelSpreadsheet: true,
           },
@@ -402,5 +402,18 @@ export class DocumentsGeneratorController {
       .replace(/-+/g, '-')
       .replace(/^-+|-+$/g, '');
     return sanitized || 'report';
+  }
+
+  private getRequestTimestampSuffix(rawName: string): string {
+    const safe = String(rawName || '').trim();
+    if (!safe) return '';
+
+    const withoutExtension = safe.replace(/\.(zip|xlsx|xls|docx|doc)$/i, '');
+    const timestampWithColonMatch = withoutExtension.match(/(\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2})$/);
+    const timestampWithDashMatch = withoutExtension.match(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$/);
+    const timestampToken = timestampWithColonMatch?.[1] || timestampWithDashMatch?.[1] || '';
+    if (!timestampToken) return '';
+
+    return `-${timestampToken.replace(/:/g, '-')}`;
   }
 }
