@@ -62,6 +62,9 @@ describe('MinioController', () => {
     process.env.MINIO_REGION = 'eu';
     process.env.MINIOSERVER = 'http://minio';
     process.env.minioPublicEndPoint = 'http://public';
+    delete process.env.MEWP_EXTERNAL_MAX_FILE_SIZE_BYTES;
+    delete process.env.MEWP_EXTERNAL_INGESTION_BUCKET;
+    delete process.env.MEWP_EXTERNAL_INGESTION_RETENTION_DAYS;
     controller = new MinioController();
   });
 
@@ -231,7 +234,8 @@ describe('MinioController', () => {
   test('uploadFile: success path uploads and unlinks temp file', async () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(true);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(null, { etag: 'etag-1' })
     );
 
@@ -362,7 +366,8 @@ describe('MinioController', () => {
     const fs = require('fs');
     mockS3.bucketExists.mockResolvedValueOnce(false);
     mockS3.makeBucket.mockResolvedValueOnce(undefined);
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(null, { etag: 'etag-2' })
     );
 
@@ -384,7 +389,8 @@ describe('MinioController', () => {
   test('uploadFile: upload error rejects', async () => {
     mockS3.bucketExists.mockResolvedValueOnce(true);
     const uploadError = new Error('upload failed');
-    mockS3.putObject.mockImplementation((_b: string, _o: string, _s: any, _len: number, cb: Function) =>
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
       cb(uploadError)
     );
 
@@ -413,6 +419,165 @@ describe('MinioController', () => {
     };
 
     await expect(controller.uploadFile(req, {} as any)).rejects.toEqual('bucket-check-fail');
+  });
+
+  test('uploadFile: MEWP external ingestion rejects invalid docType', async () => {
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'MEWP',
+        docType: 'STD',
+        purpose: 'mewpExternalIngestion',
+      },
+      file: {
+        mimetype: 'text/csv',
+        originalname: 'bugs.csv',
+        path: '/tmp/bugs.csv',
+        size: 512,
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'MEWP_EXTERNAL_UPLOAD_VALIDATION_FAILED',
+    });
+  });
+
+  test('uploadFile: MEWP external ingestion rejects unsupported extension', async () => {
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'MEWP',
+        docType: 'bugs',
+        purpose: 'mewpExternalIngestion',
+      },
+      file: {
+        mimetype: 'text/plain',
+        originalname: 'bugs.txt',
+        path: '/tmp/bugs.txt',
+        size: 512,
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'MEWP_EXTERNAL_UPLOAD_VALIDATION_FAILED',
+    });
+  });
+
+  test('uploadFile: MEWP external ingestion rejects oversize file', async () => {
+    process.env.MEWP_EXTERNAL_MAX_FILE_SIZE_BYTES = '100';
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'MEWP',
+        docType: 'bugs',
+        purpose: 'mewpExternalIngestion',
+      },
+      file: {
+        mimetype: 'text/csv',
+        originalname: 'bugs.csv',
+        path: '/tmp/bugs.csv',
+        size: 1024,
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).rejects.toMatchObject({
+      statusCode: 413,
+      code: 'MEWP_EXTERNAL_UPLOAD_VALIDATION_FAILED',
+    });
+  });
+
+  test('uploadFile: MEWP external ingestion uses dedicated bucket/prefix and 1-day retention by default', async () => {
+    const fs = require('fs');
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+    mockS3.setBucketLifecycle.mockResolvedValueOnce(undefined);
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
+      cb(null, { etag: 'mewp-etag-1' })
+    );
+
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'MEWP',
+        docType: 'bugs',
+        purpose: 'mewpExternalIngestion',
+      },
+      file: {
+        mimetype: 'text/csv',
+        originalname: 'bugs.csv',
+        path: '/tmp/bugs.csv',
+        size: 800,
+      },
+    };
+
+    const result: any = await controller.uploadFile(req, {} as any);
+    expect(mockS3.bucketExists).toHaveBeenCalledWith('mewp-external-ingestion');
+    expect(mockS3.setBucketLifecycle).toHaveBeenCalledWith(
+      'mewp-external-ingestion',
+      expect.objectContaining({
+        Rule: [
+          expect.objectContaining({
+            Expiration: { Days: 1 },
+            Filter: { Prefix: 'MEWP/mewp-external-ingestion/' },
+          }),
+        ],
+      })
+    );
+    expect(mockS3.putObject).toHaveBeenCalledWith(
+      'mewp-external-ingestion',
+      'MEWP/mewp-external-ingestion/bugs/bugs.csv',
+      expect.anything(),
+      expect.any(Number),
+      expect.any(Object),
+      expect.any(Function)
+    );
+    expect(result.fileItem.sourceType).toBe('mewpExternalIngestion');
+    expect(result.fileItem.bucketName).toBe('mewp-external-ingestion');
+    expect(fs.unlinkSync).toHaveBeenCalled();
+  });
+
+  test('uploadFile: MEWP external ingestion supports dashed purpose and custom retention days', async () => {
+    process.env.MEWP_EXTERNAL_INGESTION_RETENTION_DAYS = '3';
+    process.env.MEWP_EXTERNAL_INGESTION_BUCKET = 'my-mewp-bucket';
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+    mockS3.setBucketLifecycle.mockResolvedValueOnce(undefined);
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
+      cb(null, { etag: 'mewp-etag-2' })
+    );
+
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'MEWP',
+        docType: 'l3l4',
+        purpose: 'mewp-external-ingestion',
+      },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        originalname: 'links.xlsx',
+        path: '/tmp/links.xlsx',
+        size: 1024,
+      },
+    };
+
+    const result: any = await controller.uploadFile(req, {} as any);
+    expect(mockS3.bucketExists).toHaveBeenCalledWith('my-mewp-bucket');
+    expect(mockS3.setBucketLifecycle).toHaveBeenCalledWith(
+      'my-mewp-bucket',
+      expect.objectContaining({
+        Rule: [
+          expect.objectContaining({
+            Expiration: { Days: 3 },
+            Filter: { Prefix: 'MEWP/mewp-external-ingestion/' },
+          }),
+        ],
+      })
+    );
+    expect(result.fileItem.bucketName).toBe('my-mewp-bucket');
+    expect(result.fileItem.objectName).toBe('MEWP/mewp-external-ingestion/l3l4/links.xlsx');
   });
 
   test('deleteFile: deletes when matching etag found', async () => {
@@ -522,5 +687,29 @@ describe('MinioController', () => {
 
     await expect(controller.getBucketFileList(req, res)).rejects.toEqual('sync-fail');
     spy.mockRestore();
+  });
+
+  test('getBucketFileList: supports nested docType prefix for MEWP external ingestion listing', async () => {
+    const req: any = {
+      params: { bucketName: 'mewp-external-ingestion' },
+      query: { projectName: 'MEWP', docType: 'mewp-external-ingestion/bugs', recurse: 'true' },
+    };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'MEWP/mewp-external-ingestion/bugs/bugs.csv', etag: 'e1' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({ metaData: {} });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(mockS3.listObjectsV2).toHaveBeenCalledWith(
+      'mewp-external-ingestion',
+      'MEWP/mewp-external-ingestion/bugs',
+      true
+    );
+    expect(result.length).toBe(1);
+    expect(result[0].name).toBe('MEWP/mewp-external-ingestion/bugs/bugs.csv');
   });
 });

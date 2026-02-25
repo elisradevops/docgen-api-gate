@@ -8,6 +8,23 @@ import path from 'path';
 var Minio = require('minio');
 
 export class MinioController {
+  private getMewpExternalMaxBytes() {
+    const configured = Number(process.env.MEWP_EXTERNAL_MAX_FILE_SIZE_BYTES || 0);
+    return Number.isFinite(configured) && configured > 0 ? configured : 20 * 1024 * 1024;
+  }
+
+  private getMewpExternalRetentionDays() {
+    const configured = Number(process.env.MEWP_EXTERNAL_INGESTION_RETENTION_DAYS || 0);
+    return Number.isFinite(configured) && configured > 0 ? configured : 1;
+  }
+
+  private toUploadError(message: string, statusCode = 422, code = 'MEWP_EXTERNAL_UPLOAD_VALIDATION_FAILED') {
+    const error: any = new Error(message);
+    error.statusCode = statusCode;
+    error.code = code;
+    return error;
+  }
+
   private getContentType(fileName: string) {
     const lower = String(fileName || '').toLowerCase();
     if (lower.endsWith('.docx')) {
@@ -65,7 +82,11 @@ export class MinioController {
         return reject('No file provided');
       }
 
-      const { docType, teamProjectName, isExternalUrl, bucketName } = req.body;
+      const { docType, teamProjectName, isExternalUrl, createdBy, createdById } = req.body;
+      let { bucketName } = req.body;
+      const uploadPurpose = String(req.body?.purpose || '').trim().toLowerCase();
+      const isMewpExternalIngestion =
+        uploadPurpose === 'mewpexternalingestion' || uploadPurpose === 'mewp-external-ingestion';
 
       if (bucketName === 'templates') {
         const allowedMimeTypes = new Set<string>([
@@ -77,10 +98,48 @@ export class MinioController {
           return reject('Not a valid template. Only *.dotx or *.docx files are allowed');
         }
       }
+
+      if (isMewpExternalIngestion) {
+        const normalizedDocType = String(docType || '')
+          .trim()
+          .toLowerCase();
+        if (normalizedDocType !== 'bugs' && normalizedDocType !== 'l3l4') {
+          return reject(
+            this.toUploadError(`Invalid MEWP ingestion docType '${docType}'. Allowed values: bugs, l3l4`)
+          );
+        }
+        if (!String(teamProjectName || '').trim()) {
+          return reject(this.toUploadError('teamProjectName is required for MEWP ingestion uploads'));
+        }
+
+        const lowerName = String(req.file?.originalname || '').toLowerCase();
+        const hasAllowedExtension =
+          lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls') || lowerName.endsWith('.csv');
+        if (!hasAllowedExtension) {
+          return reject(this.toUploadError('Only .xlsx, .xls or .csv files are allowed for MEWP ingestion'));
+        }
+
+        const maxBytes = this.getMewpExternalMaxBytes();
+        const fileSize = Number(req.file?.size || 0);
+        if (fileSize <= 0 || fileSize > maxBytes) {
+          return reject(
+            this.toUploadError(
+              `File size is invalid. Maximum allowed size is ${maxBytes} bytes.`,
+              fileSize > maxBytes ? 413 : 422
+            )
+          );
+        }
+
+        bucketName = String(process.env.MEWP_EXTERNAL_INGESTION_BUCKET || 'mewp-external-ingestion').trim();
+      }
       // Prepare the Minio request with file and folder details
       const minioRequest = {
         bucketName: bucketName, // Use dynamic or environment variables as needed
-        folderName: `${teamProjectName}/${docType}`, // Use dynamic or environment variables as needed
+        folderName: isMewpExternalIngestion
+          ? `${teamProjectName}/mewp-external-ingestion/${String(docType || '')
+              .trim()
+              .toLowerCase()}`
+          : `${teamProjectName}/${docType}`, // Use dynamic or environment variables as needed
         fileName: req.file.originalname,
       };
       const s3Client = this.initS3Client();
@@ -89,7 +148,7 @@ export class MinioController {
       const objectName = `${minioRequest.folderName}/${minioRequest.fileName}`;
       const encodedObjectName = this.encodeObjectPath(objectName);
       let suffix = `${bucketName}/${encodedObjectName}`;
-      if (isExternalUrl === true) {
+      if (!isMewpExternalIngestion && isExternalUrl === true) {
         url = `${process.env.minioPublicEndPoint}/${suffix}`;
       } else {
         url = `${process.env.MINIOSERVER}/${suffix}`;
@@ -98,6 +157,13 @@ export class MinioController {
       const filePath = path.resolve(req.file.path);
       const fileStream = fs.createReadStream(filePath);
       const fileStat = fs.statSync(filePath);
+      const uploadMetadata: Record<string, string> = {};
+      if (String(createdBy || '').trim()) {
+        uploadMetadata.createdBy = String(createdBy).trim();
+      }
+      if (String(createdById || '').trim()) {
+        uploadMetadata.createdById = String(createdById).trim();
+      }
       // Ensure the bucket exists before uploading the file
       s3Client
         .bucketExists(minioRequest.bucketName)
@@ -106,17 +172,55 @@ export class MinioController {
             return s3Client.makeBucket(minioRequest.bucketName, process.env.MINIO_REGION);
           }
         })
+        .then(async () => {
+          if (!isMewpExternalIngestion) return;
+          const retentionDays = this.getMewpExternalRetentionDays();
+          const lifecycleConfig = {
+            Rule: [
+              {
+                ID: 'MewpExternalIngestionRetention',
+                Status: 'Enabled',
+                Filter: {
+                  Prefix: `${teamProjectName}/mewp-external-ingestion/`,
+                },
+                Expiration: {
+                  Days: retentionDays,
+                },
+              },
+            ],
+          };
+          await s3Client.setBucketLifecycle(minioRequest.bucketName, lifecycleConfig);
+        })
         .then(() => {
           // Upload the file to Minio
-          s3Client.putObject(minioRequest.bucketName, objectName, fileStream, fileStat.size, (err, etag) => {
+          s3Client.putObject(
+            minioRequest.bucketName,
+            objectName,
+            fileStream,
+            fileStat.size,
+            uploadMetadata,
+            (err, etag) => {
             // Delete the temporary file after uploading to Minio
             fs.unlinkSync(filePath);
             if (err) {
               logger.error('Error uploading file:', err);
               return reject(err);
             }
-            return resolve({ fileItem: { url, text: objectName, etag: etag?.etag || undefined } });
-          });
+            return resolve({
+              fileItem: {
+                url,
+                text: objectName,
+                objectName,
+                bucketName: minioRequest.bucketName,
+                etag: etag?.etag || undefined,
+                name: req.file.originalname,
+                contentType: req.file.mimetype,
+                sizeBytes: Number(req.file.size || fileStat.size || 0),
+                sourceType: isMewpExternalIngestion ? 'mewpExternalIngestion' : 'generic',
+              },
+            });
+            }
+          );
         })
         .catch((err) => {
           logger.error(err);
@@ -446,6 +550,12 @@ export class MinioController {
               stat.metaData['x-amz-meta-createdBy'] ||
               stat.metaData['x-amz-meta-createdby'] ||
               '';
+            obj.createdById =
+              stat.metaData['createdById'] ||
+              stat.metaData['createdbyid'] ||
+              stat.metaData['x-amz-meta-createdById'] ||
+              stat.metaData['x-amz-meta-createdbyid'] ||
+              '';
             obj.inputSummary =
               stat.metaData['inputSummary'] ||
               stat.metaData['inputsummary'] ||
@@ -466,6 +576,7 @@ export class MinioController {
         } catch (error) {
           logger.error(`Error fetching metadata for ${obj.name}:`, error);
           obj.createdBy = '';
+          obj.createdById = '';
           obj.inputSummary = '';
           obj.inputDetailsKey = '';
         }

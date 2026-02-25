@@ -72,6 +72,25 @@ describe('JsonDocRoutes', () => {
     expect(res.body.error).toBe('boom-doc');
   });
 
+  test('POST /jsonDocument/create returns propagated 422 for validation failures', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.documentsGeneratorController as any).createJSONDoc = jest.fn().mockRejectedValue({
+      statusCode: 422,
+      message: 'External file invalid',
+      code: 'MEWP_EXTERNAL_FILE_VALIDATION_FAILED',
+    });
+
+    const res = await withLocalAgent(app, (agent) => agent.post('/jsonDocument/create').send({}).expect(422));
+
+    expect(res.body.message).toContain('Failed to create the document External file invalid');
+    expect(res.body.error).toEqual(
+      expect.objectContaining({
+        statusCode: 422,
+        code: 'MEWP_EXTERNAL_FILE_VALIDATION_FAILED',
+      })
+    );
+  });
+
   test('POST /jsonDocument/create-test-reporter-flat returns documentUrl on success', async () => {
     const { app, routes } = createAppAndRoutes();
     (routes.documentsGeneratorController as any).createFlatTestReporterDoc = jest
@@ -98,6 +117,45 @@ describe('JsonDocRoutes', () => {
 
     expect(res.body.message).toContain('Failed to create the flat test reporter document');
     expect(res.body.error).toBe('boom-flat');
+  });
+
+  test('POST /jsonDocument/validate-mewp-external-files returns 200 on valid payload', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.documentsGeneratorController as any).validateMewpExternalFiles = jest
+      .fn()
+      .mockResolvedValue({ valid: true, bugs: { valid: true }, l3l4: { valid: true } });
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent
+        .post('/jsonDocument/validate-mewp-external-files')
+        .send({ teamProjectName: 'MEWP' })
+        .expect(200)
+    );
+
+    expect(routes.documentsGeneratorController.validateMewpExternalFiles).toHaveBeenCalled();
+    expect(res.body).toEqual({ valid: true, bugs: { valid: true }, l3l4: { valid: true } });
+  });
+
+  test('POST /jsonDocument/validate-mewp-external-files returns propagated 422 details', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.documentsGeneratorController as any).validateMewpExternalFiles = jest
+      .fn()
+      .mockRejectedValue({
+        statusCode: 422,
+        message: 'External Bugs file validation failed',
+        code: 'MEWP_EXTERNAL_FILE_VALIDATION_FAILED',
+        details: { valid: false, bugs: { missingRequiredColumns: ['SR'] } },
+      });
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/jsonDocument/validate-mewp-external-files').send({}).expect(422)
+    );
+
+    expect(res.body).toEqual({
+      message: 'External Bugs file validation failed',
+      code: 'MEWP_EXTERNAL_FILE_VALIDATION_FAILED',
+      details: { valid: false, bugs: { missingRequiredColumns: ['SR'] } },
+    });
   });
 
   test('POST /minio/files/uploadFile without file returns 400', async () => {
@@ -207,6 +265,26 @@ describe('JsonDocRoutes', () => {
     expect(routes.minioController.uploadFile).toHaveBeenCalled();
     expect(res.body.message).toContain('File upload failed');
     expect(res.body.error).toBe('upload-fail');
+  });
+
+  test('POST /minio/files/uploadFile returns propagated 422 on MEWP ingestion validation error', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.minioController as any).uploadFile = jest.fn().mockRejectedValue({
+      statusCode: 422,
+      message: 'Only .xlsx, .xls or .csv files are allowed for MEWP ingestion',
+      code: 'MEWP_EXTERNAL_UPLOAD_VALIDATION_FAILED',
+    });
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent.post('/minio/files/uploadFile').attach('file', Buffer.from('dummy'), 'file.docx').expect(422)
+    );
+
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        code: 'MEWP_EXTERNAL_UPLOAD_VALIDATION_FAILED',
+      })
+    );
+    expect(String(res.body.message || '')).toContain('File upload failed');
   });
 
   test('DELETE /minio/files/deleteFile returns 200 on success', async () => {
