@@ -337,10 +337,9 @@ export class Routes {
       };
 
       const downloadManagerUrl =
-        String(process.env.DOWNLOAD_MANAGER_URL || '').trim() ||
         String(process.env.downloadManagerUrl || '').trim() ||
-        String(process.env.MINIO_CLIENT_URL || '').trim() ||
-        'http://python-download-service:8000';
+        String(process.env.DOWNLOAD_MANAGER_URL || '').trim() ||
+        String(process.env.MINIO_CLIENT_URL || '').trim();
 
       const targets = [
         {
@@ -435,7 +434,7 @@ export class Routes {
           '/health',
           '/',
           '/uploadAttachment',
-        ], ['DOWNLOAD_MANAGER_URL', 'downloadManagerUrl', 'MINIO_CLIENT_URL']),
+        ], ['downloadManagerUrl', 'DOWNLOAD_MANAGER_URL', 'MINIO_CLIENT_URL']),
         Promise.resolve(checkMongoDb()),
       ]);
 
