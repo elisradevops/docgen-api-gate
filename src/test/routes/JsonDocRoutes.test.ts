@@ -48,6 +48,59 @@ describe('JsonDocRoutes', () => {
     expect(res.body.status).toMatch(/online - /);
   });
 
+  test('GET /health returns service status payload', async () => {
+    const { app } = createAppAndRoutes();
+    const prevContentControlUrl = process.env.dgContentControlUrl;
+    const prevJsonToWordUrl = process.env.jsonToWordPostUrl;
+    const prevMinioEndpoint = process.env.MINIO_ENDPOINT;
+    const prevMinioServer = process.env.MINIOSERVER;
+    const prevMinioUser = process.env.MINIO_ROOT_USER;
+    const prevMinioPass = process.env.MINIO_ROOT_PASSWORD;
+    const prevDownloadManagerUrl = process.env.DOWNLOAD_MANAGER_URL;
+    const prevDownloadManagerUrlLower = process.env.downloadManagerUrl;
+    const prevMinioClientUrl = process.env.MINIO_CLIENT_URL;
+    delete process.env.dgContentControlUrl;
+    delete process.env.jsonToWordPostUrl;
+    delete process.env.MINIO_ENDPOINT;
+    delete process.env.MINIOSERVER;
+    delete process.env.MINIO_ROOT_USER;
+    delete process.env.MINIO_ROOT_PASSWORD;
+    delete process.env.DOWNLOAD_MANAGER_URL;
+    delete process.env.downloadManagerUrl;
+    delete process.env.MINIO_CLIENT_URL;
+
+    const res = await withLocalAgent(app, (agent) => agent.get('/health').expect(200));
+
+    expect(res.body.service).toBe('dg-api-gate');
+    expect(Array.isArray(res.body.services)).toBe(true);
+    expect(res.body.services.length).toBeGreaterThanOrEqual(3);
+    expect(res.body.services[0]).toEqual(
+      expect.objectContaining({
+        key: 'api-gate',
+        displayName: 'API Gate',
+        connectionStatus: 'connected',
+      })
+    );
+    expect(Array.isArray(res.body.services[0]?.dependencies)).toBe(true);
+    expect(res.body.services[0].dependencies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'mongodb' }),
+        expect.objectContaining({ key: 'minio' }),
+        expect.objectContaining({ key: 'download-manager' }),
+      ])
+    );
+
+    process.env.dgContentControlUrl = prevContentControlUrl;
+    process.env.jsonToWordPostUrl = prevJsonToWordUrl;
+    process.env.MINIO_ENDPOINT = prevMinioEndpoint;
+    process.env.MINIOSERVER = prevMinioServer;
+    process.env.MINIO_ROOT_USER = prevMinioUser;
+    process.env.MINIO_ROOT_PASSWORD = prevMinioPass;
+    process.env.DOWNLOAD_MANAGER_URL = prevDownloadManagerUrl;
+    process.env.downloadManagerUrl = prevDownloadManagerUrlLower;
+    process.env.MINIO_CLIENT_URL = prevMinioClientUrl;
+  });
+
   test('POST /jsonDocument/create returns documentUrl on success', async () => {
     const { app, routes } = createAppAndRoutes();
     (routes.documentsGeneratorController as any).createJSONDoc = jest
