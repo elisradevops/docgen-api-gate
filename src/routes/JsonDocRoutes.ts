@@ -428,17 +428,53 @@ export class Routes {
         }),
       );
 
+      const getServiceDependencies = (service: any) =>
+        Array.isArray(service?.dependencies) ? service.dependencies : [];
+
+      const downloadManagerDependency = await probeHttpService('download-manager', 'Download Manager', downloadManagerUrl, [
+        '/health',
+        '/',
+        '/uploadAttachment',
+      ], ['downloadManagerUrl', 'DOWNLOAD_MANAGER_URL', 'MINIO_CLIENT_URL']);
+
+      const downstreamServicesWithDependencies = downstreamServices.map((service) => {
+        if (service?.key !== 'content-control') {
+          return service;
+        }
+
+        const existingDependencies = getServiceDependencies(service);
+        const mergedDependencies = [
+          ...existingDependencies.filter((dependency: any) => dependency?.key !== 'download-manager'),
+          downloadManagerDependency,
+        ];
+        const hasDisconnectedDependency = mergedDependencies.some(
+          (dependency: any) => String(dependency?.connectionStatus || '').toLowerCase() !== 'connected',
+        );
+        const isServiceUpAndConnected =
+          String(service?.status || '').toLowerCase() === 'up' &&
+          String(service?.connectionStatus || '').toLowerCase() === 'connected';
+
+        return {
+          ...service,
+          status: hasDisconnectedDependency && isServiceUpAndConnected ? 'degraded' : service.status,
+          connectionStatus:
+            hasDisconnectedDependency && isServiceUpAndConnected
+              ? 'degraded'
+              : service.connectionStatus,
+          dependencies: mergedDependencies,
+        };
+      });
+
       const apiGateDependencies = await Promise.all([
         checkMinio(),
-        probeHttpService('download-manager', 'Download Manager', downloadManagerUrl, [
-          '/health',
-          '/',
-          '/uploadAttachment',
-        ], ['downloadManagerUrl', 'DOWNLOAD_MANAGER_URL', 'MINIO_CLIENT_URL']),
         Promise.resolve(checkMongoDb()),
       ]);
 
-      const hasDisconnectedService = [...downstreamServices, ...apiGateDependencies].some(
+      const monitoredDependencies = downstreamServicesWithDependencies.flatMap((service) =>
+        getServiceDependencies(service),
+      );
+
+      const hasDisconnectedService = [...downstreamServicesWithDependencies, ...apiGateDependencies, ...monitoredDependencies].some(
         (service) => String(service?.connectionStatus || '').toLowerCase() !== 'connected',
       );
 
@@ -453,7 +489,7 @@ export class Routes {
         connectionStatus: hasDisconnectedService ? 'degraded' : 'connected',
         version: selfStatus.version,
         checkedAt,
-        services: [apiGateService, ...downstreamServices],
+        services: [apiGateService, ...downstreamServicesWithDependencies],
       });
     });
 
