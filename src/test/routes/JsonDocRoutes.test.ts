@@ -88,8 +88,12 @@ describe('JsonDocRoutes', () => {
       expect.arrayContaining([
         expect.objectContaining({ key: 'mongodb' }),
         expect.objectContaining({ key: 'minio' }),
-        expect.objectContaining({ key: 'download-manager' }),
       ])
+    );
+    const contentControl = res.body.services.find((service: any) => service?.key === 'content-control');
+    expect(Array.isArray(contentControl?.dependencies)).toBe(true);
+    expect(contentControl.dependencies).toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'download-manager' })])
     );
 
     process.env.dgContentControlUrl = prevContentControlUrl;
@@ -172,12 +176,21 @@ describe('JsonDocRoutes', () => {
         })
       );
 
-      const deps = res.body.services[0].dependencies;
-      expect(deps).toEqual(
+      const apiGateDependencies = res.body.services[0].dependencies;
+      expect(apiGateDependencies).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ key: 'download-manager', connectionStatus: 'connected' }),
           expect.objectContaining({ key: 'minio', connectionStatus: 'connected' }),
           expect.objectContaining({ key: 'mongodb', connectionStatus: 'connected' }),
+        ])
+      );
+      expect(
+        apiGateDependencies.find((dependency: any) => dependency?.key === 'download-manager')
+      ).toBeUndefined();
+
+      const contentControlDependencies = contentControl.dependencies;
+      expect(contentControlDependencies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'download-manager', connectionStatus: 'connected' }),
         ])
       );
     } finally {
@@ -254,16 +267,16 @@ describe('JsonDocRoutes', () => {
       expect(String(jsonToWord.error || '')).toContain('Connection timed out while reaching JSON to Word');
       expect(jsonToWord.errorCode).toBe('ECONNABORTED');
 
-      const deps = res.body.services[0].dependencies;
-      const downloadManager = deps.find((d: any) => d.key === 'download-manager');
+      const apiGateDependencies = res.body.services[0].dependencies;
+      const downloadManager = contentControl.dependencies.find((d: any) => d.key === 'download-manager');
       expect(String(downloadManager.error || '')).toContain('DNS lookup failed for host');
       expect(downloadManager.errorCode).toBe('ENOTFOUND');
 
-      const minio = deps.find((d: any) => d.key === 'minio');
+      const minio = apiGateDependencies.find((d: any) => d.key === 'minio');
       expect(String(minio.error || '')).toContain('DNS lookup failed for host');
       expect(minio.errorCode).toBe('ENOTFOUND');
 
-      const mongodb = deps.find((d: any) => d.key === 'mongodb');
+      const mongodb = apiGateDependencies.find((d: any) => d.key === 'mongodb');
       expect(mongodb.status).toBe('degraded');
       expect(mongodb.connectionStatus).toBe('degraded');
     } finally {
