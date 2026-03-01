@@ -1,5 +1,7 @@
 import App from '../../app';
+import axios from 'axios';
 import * as fs from 'fs';
+import mongoose from 'mongoose';
 import * as path from 'path';
 import { withLocalAgent } from '../utils/localSupertest';
 
@@ -99,6 +101,183 @@ describe('JsonDocRoutes', () => {
     process.env.DOWNLOAD_MANAGER_URL = prevDownloadManagerUrl;
     process.env.downloadManagerUrl = prevDownloadManagerUrlLower;
     process.env.MINIO_CLIENT_URL = prevMinioClientUrl;
+  });
+
+  test('GET /health returns connected downstream services with versions when probes succeed', async () => {
+    const { app } = createAppAndRoutes();
+    const axiosGetSpy = jest.spyOn(axios, 'get').mockImplementation(async (url: any) => {
+      const endpoint = String(url);
+      if (endpoint.includes('dg-content-control')) {
+        return {
+          status: 200,
+          data: { status: 'up', version: '1.110.2', timestamp: '2026-03-01T12:00:00.000Z' },
+        } as any;
+      }
+      if (endpoint.includes('json-to-word')) {
+        return {
+          status: 200,
+          data: { status: 'up', version: '1.0.1', timestamp: '2026-03-01T12:00:01.000Z' },
+        } as any;
+      }
+      if (endpoint.includes('python-download-service')) {
+        return { status: 200, data: {} } as any;
+      }
+      throw new Error(`unexpected endpoint: ${endpoint}`);
+    });
+
+    const minioLib = require('minio');
+    const minioClientSpy = jest.spyOn(minioLib, 'Client').mockImplementation(
+      () =>
+        ({
+          listBuckets: (cb: (err: any, buckets?: any[]) => void) => cb(null, []),
+        } as any)
+    );
+
+    const prev = {
+      dgContentControlUrl: process.env.dgContentControlUrl,
+      jsonToWordPostUrl: process.env.jsonToWordPostUrl,
+      minioEndpoint: process.env.MINIO_ENDPOINT,
+      minioServer: process.env.MINIOSERVER,
+      minioUser: process.env.MINIO_ROOT_USER,
+      minioPass: process.env.MINIO_ROOT_PASSWORD,
+      downloadManagerUrl: process.env.DOWNLOAD_MANAGER_URL,
+    };
+    const prevReadyState = (mongoose.connection as any).readyState;
+
+    process.env.dgContentControlUrl = 'http://dg-content-control:3000';
+    process.env.jsonToWordPostUrl = 'http://json-to-word:5000';
+    process.env.MINIO_ENDPOINT = 'http://s3:9000';
+    process.env.MINIO_ROOT_USER = 'user';
+    process.env.MINIO_ROOT_PASSWORD = 'pass';
+    process.env.DOWNLOAD_MANAGER_URL = 'http://python-download-service:8000';
+    (mongoose.connection as any).readyState = 1;
+
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.get('/health').expect(200));
+      expect(res.body.connectionStatus).toBe('connected');
+
+      const jsonToWord = res.body.services.find((s: any) => s.key === 'json-to-word');
+      expect(jsonToWord).toEqual(
+        expect.objectContaining({
+          connectionStatus: 'connected',
+          version: '1.0.1',
+        })
+      );
+
+      const contentControl = res.body.services.find((s: any) => s.key === 'content-control');
+      expect(contentControl).toEqual(
+        expect.objectContaining({
+          connectionStatus: 'connected',
+          version: '1.110.2',
+        })
+      );
+
+      const deps = res.body.services[0].dependencies;
+      expect(deps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'download-manager', connectionStatus: 'connected' }),
+          expect.objectContaining({ key: 'minio', connectionStatus: 'connected' }),
+          expect.objectContaining({ key: 'mongodb', connectionStatus: 'connected' }),
+        ])
+      );
+    } finally {
+      process.env.dgContentControlUrl = prev.dgContentControlUrl;
+      process.env.jsonToWordPostUrl = prev.jsonToWordPostUrl;
+      process.env.MINIO_ENDPOINT = prev.minioEndpoint;
+      process.env.MINIOSERVER = prev.minioServer;
+      process.env.MINIO_ROOT_USER = prev.minioUser;
+      process.env.MINIO_ROOT_PASSWORD = prev.minioPass;
+      process.env.DOWNLOAD_MANAGER_URL = prev.downloadManagerUrl;
+      (mongoose.connection as any).readyState = prevReadyState;
+      axiosGetSpy.mockRestore();
+      minioClientSpy.mockRestore();
+    }
+  });
+
+  test('GET /health maps probe failures into explicit diagnostics', async () => {
+    const { app } = createAppAndRoutes();
+    const axiosGetSpy = jest.spyOn(axios, 'get').mockImplementation(async (url: any) => {
+      const endpoint = String(url);
+      if (endpoint.includes('dg-content-control')) {
+        throw { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 10.0.0.5:3000' };
+      }
+      if (endpoint.includes('json-to-word')) {
+        throw { code: 'ECONNABORTED', message: 'request timed out' };
+      }
+      if (endpoint.includes('/uploadAttachment')) {
+        throw { code: 'ENOTFOUND', message: 'ENOTFOUND python-download-service' };
+      }
+      if (endpoint.includes('python-download-service')) {
+        throw { code: 'ETIMEDOUT', message: 'socket timeout' };
+      }
+      throw new Error(`unexpected endpoint: ${endpoint}`);
+    });
+
+    const minioLib = require('minio');
+    const minioClientSpy = jest.spyOn(minioLib, 'Client').mockImplementation(
+      () =>
+        ({
+          listBuckets: (cb: (err: any, buckets?: any[]) => void) =>
+            cb({ code: 'ENOTFOUND', message: 'getaddrinfo ENOTFOUND s3' }),
+        } as any)
+    );
+
+    const prev = {
+      dgContentControlUrl: process.env.dgContentControlUrl,
+      jsonToWordPostUrl: process.env.jsonToWordPostUrl,
+      minioEndpoint: process.env.MINIO_ENDPOINT,
+      minioServer: process.env.MINIOSERVER,
+      minioUser: process.env.MINIO_ROOT_USER,
+      minioPass: process.env.MINIO_ROOT_PASSWORD,
+      downloadManagerUrl: process.env.DOWNLOAD_MANAGER_URL,
+    };
+    const prevReadyState = (mongoose.connection as any).readyState;
+
+    process.env.dgContentControlUrl = 'http://dg-content-control:3000';
+    process.env.jsonToWordPostUrl = 'http://json-to-word:5000';
+    process.env.MINIO_ENDPOINT = 'http://s3:9000';
+    process.env.MINIO_ROOT_USER = 'user';
+    process.env.MINIO_ROOT_PASSWORD = 'pass';
+    process.env.DOWNLOAD_MANAGER_URL = 'http://python-download-service:8000';
+    (mongoose.connection as any).readyState = 2;
+
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.get('/health').expect(200));
+      expect(res.body.status).toBe('degraded');
+      expect(res.body.connectionStatus).toBe('degraded');
+
+      const contentControl = res.body.services.find((s: any) => s.key === 'content-control');
+      expect(String(contentControl.error || '')).toContain('Connection refused by');
+      expect(contentControl.errorCode).toBe('ECONNREFUSED');
+
+      const jsonToWord = res.body.services.find((s: any) => s.key === 'json-to-word');
+      expect(String(jsonToWord.error || '')).toContain('Connection timed out while reaching JSON to Word');
+      expect(jsonToWord.errorCode).toBe('ECONNABORTED');
+
+      const deps = res.body.services[0].dependencies;
+      const downloadManager = deps.find((d: any) => d.key === 'download-manager');
+      expect(String(downloadManager.error || '')).toContain('DNS lookup failed for host');
+      expect(downloadManager.errorCode).toBe('ENOTFOUND');
+
+      const minio = deps.find((d: any) => d.key === 'minio');
+      expect(String(minio.error || '')).toContain('DNS lookup failed for host');
+      expect(minio.errorCode).toBe('ENOTFOUND');
+
+      const mongodb = deps.find((d: any) => d.key === 'mongodb');
+      expect(mongodb.status).toBe('degraded');
+      expect(mongodb.connectionStatus).toBe('degraded');
+    } finally {
+      process.env.dgContentControlUrl = prev.dgContentControlUrl;
+      process.env.jsonToWordPostUrl = prev.jsonToWordPostUrl;
+      process.env.MINIO_ENDPOINT = prev.minioEndpoint;
+      process.env.MINIOSERVER = prev.minioServer;
+      process.env.MINIO_ROOT_USER = prev.minioUser;
+      process.env.MINIO_ROOT_PASSWORD = prev.minioPass;
+      process.env.DOWNLOAD_MANAGER_URL = prev.downloadManagerUrl;
+      (mongoose.connection as any).readyState = prevReadyState;
+      axiosGetSpy.mockRestore();
+      minioClientSpy.mockRestore();
+    }
   });
 
   test('POST /jsonDocument/create returns documentUrl on success', async () => {
@@ -386,6 +565,36 @@ describe('JsonDocRoutes', () => {
 
     expect(routes.minioController.getJSONContentFromFile).toHaveBeenCalled();
     expect(res.body).toEqual({ status: 404, message: 'not-found' });
+  });
+
+  test('GET /minio/contentFromObject returns 200 on success and 404 on error', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.minioController as any).getJSONContentFromObject = jest
+      .fn()
+      .mockResolvedValueOnce({ hello: 'world' })
+      .mockRejectedValueOnce('object-not-found');
+
+    const ok = await withLocalAgent(app, (agent) =>
+      agent.get('/minio/contentFromObject/templates/folder/file.json').expect(200)
+    );
+    expect(ok.body).toEqual({ contentFromObject: { hello: 'world' } });
+
+    const notFound = await withLocalAgent(app, (agent) =>
+      agent.get('/minio/contentFromObject/templates/folder/file.json').expect(404)
+    );
+    expect(notFound.body).toEqual({ status: 404, message: 'object-not-found' });
+  });
+
+  test('GET /minio/download returns 404 on controller error', async () => {
+    const { app, routes } = createAppAndRoutes();
+    (routes.minioController as any).downloadFile = jest.fn().mockRejectedValue('download-not-found');
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent.get('/minio/download/templates/folder/file.json').expect(404)
+    );
+
+    expect(routes.minioController.downloadFile).toHaveBeenCalled();
+    expect(res.body).toEqual({ status: 404, message: 'download-not-found' });
   });
 
   test('GET /dataBase/getFavorites returns 200 on success', async () => {
