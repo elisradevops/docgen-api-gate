@@ -140,7 +140,7 @@ describe('JsonDocRoutes', () => {
       minioServer: process.env.MINIOSERVER,
       minioUser: process.env.MINIO_ROOT_USER,
       minioPass: process.env.MINIO_ROOT_PASSWORD,
-      downloadManagerUrl: process.env.DOWNLOAD_MANAGER_URL,
+      downloadManagerUrl: process.env.downloadManagerUrl,
     };
     const prevReadyState = (mongoose.connection as any).readyState;
 
@@ -149,7 +149,7 @@ describe('JsonDocRoutes', () => {
     process.env.MINIO_ENDPOINT = 'http://s3:9000';
     process.env.MINIO_ROOT_USER = 'user';
     process.env.MINIO_ROOT_PASSWORD = 'pass';
-    process.env.DOWNLOAD_MANAGER_URL = 'http://python-download-service:8000';
+    process.env.downloadManagerUrl = 'http://python-download-service:8000';
     (mongoose.connection as any).readyState = 1;
 
     try {
@@ -187,7 +187,7 @@ describe('JsonDocRoutes', () => {
       process.env.MINIOSERVER = prev.minioServer;
       process.env.MINIO_ROOT_USER = prev.minioUser;
       process.env.MINIO_ROOT_PASSWORD = prev.minioPass;
-      process.env.DOWNLOAD_MANAGER_URL = prev.downloadManagerUrl;
+      process.env.downloadManagerUrl = prev.downloadManagerUrl;
       (mongoose.connection as any).readyState = prevReadyState;
       axiosGetSpy.mockRestore();
       minioClientSpy.mockRestore();
@@ -229,7 +229,7 @@ describe('JsonDocRoutes', () => {
       minioServer: process.env.MINIOSERVER,
       minioUser: process.env.MINIO_ROOT_USER,
       minioPass: process.env.MINIO_ROOT_PASSWORD,
-      downloadManagerUrl: process.env.DOWNLOAD_MANAGER_URL,
+      downloadManagerUrl: process.env.downloadManagerUrl,
     };
     const prevReadyState = (mongoose.connection as any).readyState;
 
@@ -238,7 +238,7 @@ describe('JsonDocRoutes', () => {
     process.env.MINIO_ENDPOINT = 'http://s3:9000';
     process.env.MINIO_ROOT_USER = 'user';
     process.env.MINIO_ROOT_PASSWORD = 'pass';
-    process.env.DOWNLOAD_MANAGER_URL = 'http://python-download-service:8000';
+    process.env.downloadManagerUrl = 'http://python-download-service:8000';
     (mongoose.connection as any).readyState = 2;
 
     try {
@@ -273,7 +273,7 @@ describe('JsonDocRoutes', () => {
       process.env.MINIOSERVER = prev.minioServer;
       process.env.MINIO_ROOT_USER = prev.minioUser;
       process.env.MINIO_ROOT_PASSWORD = prev.minioPass;
-      process.env.DOWNLOAD_MANAGER_URL = prev.downloadManagerUrl;
+      process.env.downloadManagerUrl = prev.downloadManagerUrl;
       (mongoose.connection as any).readyState = prevReadyState;
       axiosGetSpy.mockRestore();
       minioClientSpy.mockRestore();
