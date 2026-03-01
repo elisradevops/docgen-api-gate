@@ -158,67 +158,6 @@ export class Routes {
         };
       };
 
-      /**
-       * HTTP-based health probe with multi-path fallback, used for downstream services.
-       */
-      const probeHttpService = async (
-        key: string,
-        displayName: string,
-        baseUrl: string,
-        probePaths: string[] = ['/health', '/'],
-        configKeys: string[] = [],
-      ) => {
-        const normalizedBase = String(baseUrl || '').trim().replace(/\/+$/, '');
-        if (!normalizedBase) {
-          return createDisconnectedStatus(key, displayName, 'Service URL is not configured', '', {
-            hint: configKeys.length > 0 ? `Set one of: ${configKeys.join(', ')}` : undefined,
-            configKeys,
-            errorCode: 'MISSING_SERVICE_URL',
-          });
-        }
-
-        let lastError = 'No successful probe response';
-        let lastHint = '';
-        let lastErrorCode = '';
-        for (const probePath of probePaths) {
-          const endpoint = `${normalizedBase}${probePath}`;
-          const startedAt = Date.now();
-          try {
-            const response = await axios.get(endpoint, {
-              timeout: 4000,
-              validateStatus: () => true,
-            });
-            const responseTimeMs = Date.now() - startedAt;
-            const reachable = response.status > 0 && response.status < 500;
-            if (reachable) {
-              return {
-                key,
-                displayName,
-                status: 'up',
-                connectionStatus: 'connected',
-                version: 'n/a',
-                checkedAt,
-                endpoint,
-                responseTimeMs,
-                httpStatus: response.status,
-              };
-            }
-            lastError = `HTTP ${response.status}`;
-          } catch (error: any) {
-            const normalizedError = normalizeProbeError(error, displayName, endpoint);
-            lastError = normalizedError.message;
-            lastHint = normalizedError.hint || '';
-            lastErrorCode = normalizedError.errorCode || '';
-          }
-        }
-
-        return createDisconnectedStatus(key, displayName, lastError, normalizedBase, {
-          hint: lastHint || undefined,
-          configKeys,
-          errorCode: lastErrorCode || undefined,
-        });
-      };
-
       const checkMongoDb = () => {
         const state = Number(mongoose?.connection?.readyState ?? 0);
         const stateLabelMap: Record<number, string> = {
@@ -336,11 +275,6 @@ export class Routes {
         }
       };
 
-      const downloadManagerUrl =
-        String(process.env.downloadManagerUrl || '').trim() ||
-        String(process.env.DOWNLOAD_MANAGER_URL || '').trim() ||
-        String(process.env.MINIO_CLIENT_URL || '').trim();
-
       const targets = [
         {
           key: 'content-control',
@@ -403,6 +337,7 @@ export class Routes {
               endpoint,
               responseTimeMs,
               packages: payload?.packages,
+              dependencies: Array.isArray(payload?.dependencies) ? payload.dependencies : undefined,
               error: isUpstreamConnected ? undefined : payload?.error || `HTTP ${response.status}`,
               hint: isUpstreamConnected ? undefined : payload?.hint,
               configKeys: target.configKeys,
@@ -431,22 +366,13 @@ export class Routes {
       const getServiceDependencies = (service: any) =>
         Array.isArray(service?.dependencies) ? service.dependencies : [];
 
-      const downloadManagerDependency = await probeHttpService('download-manager', 'Download Manager', downloadManagerUrl, [
-        '/health',
-        '/',
-        '/uploadAttachment',
-      ], ['downloadManagerUrl', 'DOWNLOAD_MANAGER_URL', 'MINIO_CLIENT_URL']);
-
       const downstreamServicesWithDependencies = downstreamServices.map((service) => {
         if (service?.key !== 'content-control') {
           return service;
         }
 
         const existingDependencies = getServiceDependencies(service);
-        const mergedDependencies = [
-          ...existingDependencies.filter((dependency: any) => dependency?.key !== 'download-manager'),
-          downloadManagerDependency,
-        ];
+        const mergedDependencies = existingDependencies;
         const hasDisconnectedDependency = mergedDependencies.some(
           (dependency: any) => String(dependency?.connectionStatus || '').toLowerCase() !== 'connected',
         );

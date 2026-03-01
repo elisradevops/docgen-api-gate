@@ -90,12 +90,6 @@ describe('JsonDocRoutes', () => {
         expect.objectContaining({ key: 'minio' }),
       ])
     );
-    const contentControl = res.body.services.find((service: any) => service?.key === 'content-control');
-    expect(Array.isArray(contentControl?.dependencies)).toBe(true);
-    expect(contentControl.dependencies).toEqual(
-      expect.arrayContaining([expect.objectContaining({ key: 'download-manager' })])
-    );
-
     process.env.dgContentControlUrl = prevContentControlUrl;
     process.env.jsonToWordPostUrl = prevJsonToWordUrl;
     process.env.MINIO_ENDPOINT = prevMinioEndpoint;
@@ -114,7 +108,23 @@ describe('JsonDocRoutes', () => {
       if (endpoint.includes('dg-content-control')) {
         return {
           status: 200,
-          data: { status: 'up', version: '1.110.2', timestamp: '2026-03-01T12:00:00.000Z' },
+          data: {
+            status: 'up',
+            version: '1.110.2',
+            timestamp: '2026-03-01T12:00:00.000Z',
+            dependencies: [
+              {
+                key: 'download-manager',
+                displayName: 'Download Manager',
+                status: 'up',
+                connectionStatus: 'connected',
+                version: 'n/a',
+                checkedAt: '2026-03-01T12:00:00.000Z',
+                endpoint: 'http://dg-download-manager-service:8000/uploadAttachment',
+                responseTimeMs: 5,
+              },
+            ],
+          },
         } as any;
       }
       if (endpoint.includes('json-to-word')) {
@@ -122,9 +132,6 @@ describe('JsonDocRoutes', () => {
           status: 200,
           data: { status: 'up', version: '1.0.1', timestamp: '2026-03-01T12:00:01.000Z' },
         } as any;
-      }
-      if (endpoint.includes('python-download-service')) {
-        return { status: 200, data: {} } as any;
       }
       throw new Error(`unexpected endpoint: ${endpoint}`);
     });
@@ -153,7 +160,7 @@ describe('JsonDocRoutes', () => {
     process.env.MINIO_ENDPOINT = 'http://s3:9000';
     process.env.MINIO_ROOT_USER = 'user';
     process.env.MINIO_ROOT_PASSWORD = 'pass';
-    process.env.downloadManagerUrl = 'http://python-download-service:8000';
+    delete process.env.downloadManagerUrl;
     (mongoose.connection as any).readyState = 1;
 
     try {
@@ -217,12 +224,6 @@ describe('JsonDocRoutes', () => {
       if (endpoint.includes('json-to-word')) {
         throw { code: 'ECONNABORTED', message: 'request timed out' };
       }
-      if (endpoint.includes('/uploadAttachment')) {
-        throw { code: 'ENOTFOUND', message: 'ENOTFOUND python-download-service' };
-      }
-      if (endpoint.includes('python-download-service')) {
-        throw { code: 'ETIMEDOUT', message: 'socket timeout' };
-      }
       throw new Error(`unexpected endpoint: ${endpoint}`);
     });
 
@@ -242,7 +243,6 @@ describe('JsonDocRoutes', () => {
       minioServer: process.env.MINIOSERVER,
       minioUser: process.env.MINIO_ROOT_USER,
       minioPass: process.env.MINIO_ROOT_PASSWORD,
-      downloadManagerUrl: process.env.downloadManagerUrl,
     };
     const prevReadyState = (mongoose.connection as any).readyState;
 
@@ -251,7 +251,6 @@ describe('JsonDocRoutes', () => {
     process.env.MINIO_ENDPOINT = 'http://s3:9000';
     process.env.MINIO_ROOT_USER = 'user';
     process.env.MINIO_ROOT_PASSWORD = 'pass';
-    process.env.downloadManagerUrl = 'http://python-download-service:8000';
     (mongoose.connection as any).readyState = 2;
 
     try {
@@ -268,9 +267,8 @@ describe('JsonDocRoutes', () => {
       expect(jsonToWord.errorCode).toBe('ECONNABORTED');
 
       const apiGateDependencies = res.body.services[0].dependencies;
-      const downloadManager = contentControl.dependencies.find((d: any) => d.key === 'download-manager');
-      expect(String(downloadManager.error || '')).toContain('DNS lookup failed for host');
-      expect(downloadManager.errorCode).toBe('ENOTFOUND');
+      expect(Array.isArray(contentControl.dependencies)).toBe(true);
+      expect(contentControl.dependencies.length).toBe(0);
 
       const minio = apiGateDependencies.find((d: any) => d.key === 'minio');
       expect(String(minio.error || '')).toContain('DNS lookup failed for host');
@@ -286,7 +284,6 @@ describe('JsonDocRoutes', () => {
       process.env.MINIOSERVER = prev.minioServer;
       process.env.MINIO_ROOT_USER = prev.minioUser;
       process.env.MINIO_ROOT_PASSWORD = prev.minioPass;
-      process.env.downloadManagerUrl = prev.downloadManagerUrl;
       (mongoose.connection as any).readyState = prevReadyState;
       axiosGetSpy.mockRestore();
       minioClientSpy.mockRestore();
