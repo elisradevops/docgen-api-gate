@@ -1,7 +1,6 @@
 import axios from 'axios';
 import App from '../../app';
 import { withLocalAgent } from '../utils/localSupertest';
-import JSZip from 'jszip';
 
 jest.mock('axios', () => {
   const post = jest.fn();
@@ -85,7 +84,7 @@ describe('DocumentsGeneratorController HTTP integration', () => {
     );
   });
 
-  test('POST /jsonDocument/create (MEWP standalone) returns ZIP with mocked coverage/internal-validation reports', async () => {
+  test('POST /jsonDocument/create (MEWP standalone) returns a single coverage excel file', async () => {
     const mewpCoverageColumns = [
       'L2 REQ ID',
       'L2 REQ Title',
@@ -99,14 +98,6 @@ describe('DocumentsGeneratorController HTTP integration', () => {
       'L4 REQ ID',
       'L4 REQ Title',
     ];
-    const internalValidationColumns = [
-      'Test Case ID',
-      'Test Case Title',
-      'Mentioned but Not Linked',
-      'Linked but Not Mentioned',
-      'Validation Status',
-    ];
-
     genMock.generateContentControls.mockResolvedValueOnce([
       {
         title: 'mewp-l2-implementation-content-control',
@@ -137,44 +128,9 @@ describe('DocumentsGeneratorController HTTP integration', () => {
     ]);
 
     let excelCreateCalls = 0;
-    const zipBase64Promise = new JSZip()
-      .file('mewp-l2-coverage-report.xlsx', 'mock-main-excel')
-      .file('mewp-internal-validation-report.xlsx', 'mock-internal-excel')
-      .generateAsync({ type: 'base64' });
     (axios.post as jest.Mock).mockImplementation((url: string, payload: any) => {
       if (url === 'http://cc/generate-doc-template') {
         return Promise.resolve({ data: { template: true } });
-      }
-
-      if (url === 'http://cc/generate-content-control') {
-        expect(payload.contentControlOptions).toEqual(
-          expect.objectContaining({
-            type: 'internalValidationReporter',
-            title: 'mewp-internal-validation-content-control',
-          })
-        );
-        return Promise.resolve({
-          data: {
-            title: 'mewp-internal-validation-content-control',
-            isExcelSpreadsheet: true,
-            wordObjects: [
-              {
-                type: 'InternalValidationReporter',
-                testPlanName: 'MEWP Internal Validation - Mock Plan',
-                columnOrder: internalValidationColumns,
-                rows: [
-                  {
-                    'Test Case ID': 3001,
-                    'Test Case Title': 'TC 3001',
-                    'Mentioned but Not Linked': 'Step 2: SR0538-1',
-                    'Linked but Not Mentioned': '',
-                    'Validation Status': 'Fail',
-                  },
-                ],
-              },
-            ],
-          },
-        });
       }
 
       if (url === 'http://jw/api/excel/create') {
@@ -202,32 +158,7 @@ describe('DocumentsGeneratorController HTTP integration', () => {
           });
         }
 
-        expect(object?.type).toBe('InternalValidationReporter');
-        expect(object?.columnOrder).toEqual(internalValidationColumns);
-        expect(object?.rows?.[0]).toEqual(
-          expect.objectContaining({
-            'Test Case ID': 3001,
-            'Mentioned but Not Linked': 'Step 2: SR0538-1',
-            'Validation Status': 'Fail',
-          })
-        );
-        return Promise.resolve({
-          data: {
-            FileName: 'mewp-internal-validation-report.xlsx',
-            Base64: Buffer.from('mock-internal-excel').toString('base64'),
-            ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          },
-        });
-      }
-
-      if (url === 'http://jw/api/excel/create-zip') {
-        return zipBase64Promise.then((zipBase64) => ({
-          data: {
-            FileName: 'mewp-mock-reports.zip',
-            Base64: zipBase64,
-            ApplicationType: 'application/zip',
-          },
-        }));
+        throw new Error(`Unexpected extra excel/create invocation #${excelCreateCalls}`);
       }
 
       throw new Error(`Unexpected URL in axios.post mock: ${url}`);
@@ -250,7 +181,6 @@ describe('DocumentsGeneratorController HTTP integration', () => {
           data: {
             testPlanId: 123,
             testSuiteArray: [456],
-            includeInternalValidationReport: true,
           },
           isExcelSpreadsheet: true,
         },
@@ -264,22 +194,11 @@ describe('DocumentsGeneratorController HTTP integration', () => {
     const documentUrl = res.body?.documentUrl || {};
     expect(documentUrl).toEqual(
       expect.objectContaining({
-        FileName: 'mewp-mock-reports.zip',
-        ApplicationType: 'application/zip',
+        FileName: 'mewp-l2-coverage-report.xlsx',
+        ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       })
     );
-    expect(excelCreateCalls).toBe(2);
-
-    const zip = await JSZip.loadAsync(Buffer.from(String(documentUrl.Base64 || ''), 'base64'));
-    expect(Object.keys(zip.files).sort()).toEqual([
-      'mewp-internal-validation-report.xlsx',
-      'mewp-l2-coverage-report.xlsx',
-    ]);
-    await expect(zip.file('mewp-l2-coverage-report.xlsx')!.async('string')).resolves.toBe(
-      'mock-main-excel'
-    );
-    await expect(zip.file('mewp-internal-validation-report.xlsx')!.async('string')).resolves.toBe(
-      'mock-internal-excel'
-    );
+    expect(excelCreateCalls).toBe(1);
+    expect((axios.post as jest.Mock).mock.calls.some((call: any[]) => call[0].includes('/create-zip'))).toBe(false);
   });
 });

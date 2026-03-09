@@ -1,6 +1,5 @@
 import { DocumentsGeneratorController } from '../../controllers/DocumentsGeneratorController';
 import { buildRes } from '../utils/testResponse';
-import JSZip from 'jszip';
 
 jest.mock('axios', () => ({
   post: jest.fn(),
@@ -264,36 +263,60 @@ describe('DocumentsGeneratorController', () => {
     });
   });
 
-  test('creates direct-download zip with main and internal validation excel files', async () => {
-    const mainExcelBase64 = Buffer.from('main-excel-content').toString('base64');
-    const internalExcelBase64 = Buffer.from('internal-validation-content').toString('base64');
-    const zipBase64 = await new JSZip()
-      .file('mewp.xlsx', 'main-excel-content')
-      .file('mewp-internal-validation.xlsx', 'internal-validation-content')
-      .generateAsync({ type: 'base64' });
-
+  test('internal validation reporter generates a single excel file (no zip)', async () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({
         data: {
-          FileName: 'mewp.xlsx',
-          Base64: mainExcelBase64,
+          FileName: 'mewp-internal-validation-report.xlsx',
+          Base64: Buffer.from('internal-validation-content').toString('base64'),
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
-      })
-      .mockResolvedValueOnce({ data: { isExcelSpreadsheet: true } })
-      .mockResolvedValueOnce({
-        data: {
-          FileName: 'mewp-internal-validation.xlsx',
-          Base64: internalExcelBase64,
-          ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+
+    const req = makeReq({
+      uploadProperties: {
+        bucketName: 'ATTACH_MENTS',
+        fileName: 'MEWP-Test-Reporter.xlsx',
+      },
+      contentControls: [
+        {
+          title: 'mewp-internal-validation-content-control',
+          type: 'internalValidationReporter',
+          headingLevel: 2,
+          data: { testPlanId: 34 },
         },
+      ],
+    });
+
+    const result = await controller.createJSONDoc(req, buildRes());
+    expect(result).toEqual(
+      expect.objectContaining({
+        FileName: 'mewp-internal-validation-report.xlsx',
+        ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       })
+    );
+    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(axios.post.mock.calls[1][0]).toBe('http://jw/api/excel/create');
+    expect(axios.post.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        uploadProperties: expect.objectContaining({
+          fileName: 'mewp-internal-validation-report.xlsx',
+        }),
+      })
+    );
+    expect(axios.post.mock.calls.some((call: any[]) => call[0].includes('/create-zip'))).toBe(false);
+  });
+
+  test('legacy includeInternalValidationReport flag does not trigger zip generation', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({
         data: {
-          FileName: 'mewp.zip',
-          Base64: zipBase64,
-          ApplicationType: 'application/zip',
+          FileName: 'mewp-l2-coverage-report.xlsx',
+          Base64: Buffer.from('main').toString('base64'),
+          ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
     genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
@@ -302,209 +325,6 @@ describe('DocumentsGeneratorController', () => {
       uploadProperties: {
         bucketName: 'ATTACH_MENTS',
         fileName: 'mewp.xlsx',
-        enableDirectDownload: true,
-      },
-      contentControls: [
-        {
-          title: 'test-reporter-content-control',
-          type: 'testReporter',
-          headingLevel: 1,
-          data: { testPlanId: 12, includeInternalValidationReport: true },
-        },
-      ],
-    });
-    const res = buildRes();
-
-    const result = await controller.createJSONDoc(req, res);
-    expect(result).toEqual(
-      expect.objectContaining({
-        FileName: 'mewp.zip',
-        ApplicationType: 'application/zip',
-      })
-    );
-
-    const zip = await JSZip.loadAsync(Buffer.from(result.Base64, 'base64'));
-    expect(Object.keys(zip.files).sort()).toEqual(['mewp-internal-validation.xlsx', 'mewp.xlsx']);
-    await expect(zip.file('mewp.xlsx')!.async('string')).resolves.toBe('main-excel-content');
-    await expect(zip.file('mewp-internal-validation.xlsx')!.async('string')).resolves.toBe(
-      'internal-validation-content'
-    );
-
-    expect(axios.post.mock.calls.map((call: any[]) => call[0])).toEqual([
-      'http://cc/generate-doc-template',
-      'http://jw/api/excel/create',
-      'http://cc/generate-content-control',
-      'http://jw/api/excel/create',
-      'http://jw/api/excel/create-zip',
-    ]);
-  });
-
-  test('end-to-end MEWP standalone zip flow keeps required report fields in both excel payloads', async () => {
-    const mewpCoverageColumns = [
-      'L2 REQ ID',
-      'L2 REQ Title',
-      'L2 SubSystem',
-      'L2 Run Status',
-      'Bug ID',
-      'Bug Title',
-      'Bug Responsibility',
-      'L3 REQ ID',
-      'L3 REQ Title',
-      'L4 REQ ID',
-      'L4 REQ Title',
-    ];
-    const internalValidationColumns = [
-      'Test Case ID',
-      'Test Case Title',
-      'Mentioned but Not Linked',
-      'Linked but Not Mentioned',
-      'Validation Status',
-    ];
-
-    genMock.generateContentControls.mockResolvedValueOnce([
-      {
-        title: 'mewp-l2-implementation-content-control',
-        isExcelSpreadsheet: true,
-        wordObjects: [
-          {
-            type: 'MewpCoverageReporter',
-            testPlanName: 'MEWP L2 Coverage - Plan A',
-            columnOrder: mewpCoverageColumns,
-            rows: [
-              {
-                'L2 REQ ID': 'SR0538',
-                'L2 REQ Title': 'Requirement 0538',
-                'L2 SubSystem': 'ESUK',
-                'L2 Run Status': 'Fail',
-                'Bug ID': 101,
-                'Bug Title': 'Bug 101',
-                'Bug Responsibility': 'ESUK',
-                'L3 REQ ID': '9001',
-                'L3 REQ Title': 'L3 Req',
-                'L4 REQ ID': '',
-                'L4 REQ Title': '',
-              },
-            ],
-          },
-        ],
-      },
-    ]);
-
-    let excelCreateCall = 0;
-    const zipBase64 = await new JSZip()
-      .file('mewp-l2-coverage-report.xlsx', 'coverage-excel')
-      .file('mewp-internal-validation-report.xlsx', 'internal-validation-excel')
-      .generateAsync({ type: 'base64' });
-    axios.post.mockImplementation((url: string, payload: any) => {
-      if (url === 'http://cc/generate-doc-template') {
-        return Promise.resolve({ data: { template: true } });
-      }
-
-      if (url === 'http://cc/generate-content-control') {
-        expect(payload.contentControlOptions).toEqual(
-          expect.objectContaining({
-            type: 'internalValidationReporter',
-            title: 'mewp-internal-validation-content-control',
-            data: expect.objectContaining({
-              includeInternalValidationReport: true,
-            }),
-          })
-        );
-        return Promise.resolve({
-          data: {
-            title: 'mewp-internal-validation-content-control',
-            isExcelSpreadsheet: true,
-            wordObjects: [
-              {
-                type: 'InternalValidationReporter',
-                testPlanName: 'MEWP Internal Validation - Plan A',
-                columnOrder: internalValidationColumns,
-                rows: [
-                  {
-                    'Test Case ID': 3001,
-                    'Test Case Title': 'TC 3001',
-                    'Mentioned but Not Linked': 'Step 2: SR0538-1',
-                    'Linked but Not Mentioned': '',
-                    'Validation Status': 'Fail',
-                  },
-                ],
-              },
-            ],
-          },
-        });
-      }
-
-      if (url === 'http://jw/api/excel/create') {
-        excelCreateCall += 1;
-        const control = payload?.JsonDataList?.[0];
-        const object = control?.wordObjects?.[0];
-        expect(control?.isExcelSpreadsheet).toBe(true);
-
-        if (excelCreateCall === 1) {
-          expect(object?.type).toBe('MewpCoverageReporter');
-          expect(object?.columnOrder).toEqual(mewpCoverageColumns);
-          expect(object?.rows?.[0]).toEqual(
-            expect.objectContaining({
-              'L2 REQ ID': 'SR0538',
-              'L2 REQ Title': 'Requirement 0538',
-              'L2 SubSystem': 'ESUK',
-              'L2 Run Status': 'Fail',
-              'Bug ID': 101,
-              'Bug Title': 'Bug 101',
-              'Bug Responsibility': 'ESUK',
-              'L3 REQ ID': '9001',
-              'L3 REQ Title': 'L3 Req',
-              'L4 REQ ID': '',
-              'L4 REQ Title': '',
-            })
-          );
-          return Promise.resolve({
-            data: {
-              FileName: 'mewp-l2-coverage-report.xlsx',
-              Base64: Buffer.from('coverage-excel').toString('base64'),
-              ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            },
-          });
-        }
-
-        expect(object?.type).toBe('InternalValidationReporter');
-        expect(object?.columnOrder).toEqual(internalValidationColumns);
-        expect(object?.rows?.[0]).toEqual(
-          expect.objectContaining({
-            'Test Case ID': 3001,
-            'Mentioned but Not Linked': 'Step 2: SR0538-1',
-            'Validation Status': 'Fail',
-          })
-        );
-        return Promise.resolve({
-          data: {
-            FileName: 'mewp-internal-validation-report.xlsx',
-            Base64: Buffer.from('internal-validation-excel').toString('base64'),
-            ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          },
-        });
-      }
-
-      if (url === 'http://jw/api/excel/create-zip') {
-        expect(payload?.files).toHaveLength(2);
-        return Promise.resolve({
-          data: {
-            FileName: 'mewp-reports.zip',
-            Base64: zipBase64,
-            ApplicationType: 'application/zip',
-          },
-        });
-      }
-
-      throw new Error(`Unexpected URL in axios.post mock: ${url}`);
-    });
-
-    const req = makeReq({
-      teamProjectName: 'MEWP',
-      uploadProperties: {
-        bucketName: 'ATTACH_MENTS',
-        fileName: 'mewp.xlsx',
-        enableDirectDownload: true,
       },
       contentControls: [
         {
@@ -513,85 +333,14 @@ describe('DocumentsGeneratorController', () => {
           headingLevel: 2,
           data: {
             testPlanId: 34,
-            testSuiteArray: [101],
             includeInternalValidationReport: true,
           },
         },
       ],
     });
-    const res = buildRes();
 
-    const result = await controller.createJSONDoc(req, res);
-    expect(result).toEqual(
-      expect.objectContaining({
-        FileName: 'mewp-reports.zip',
-        ApplicationType: 'application/zip',
-      })
-    );
-    expect(excelCreateCall).toBe(2);
-
-    const zip = await JSZip.loadAsync(Buffer.from(result.Base64, 'base64'));
-    expect(Object.keys(zip.files).sort()).toEqual([
-      'mewp-internal-validation-report.xlsx',
-      'mewp-l2-coverage-report.xlsx',
-    ]);
-  });
-
-  test('uploads generated zip to minio when direct download is disabled', async () => {
-    const mainExcelBase64 = Buffer.from('main').toString('base64');
-    const internalExcelBase64 = Buffer.from('internal').toString('base64');
-
-    axios.post
-      .mockResolvedValueOnce({ data: { template: true } })
-      .mockResolvedValueOnce({
-        data: {
-          fileName: 'mewp.xlsx',
-          base64: mainExcelBase64,
-          applicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        },
-      })
-      .mockResolvedValueOnce({ data: { isExcelSpreadsheet: true } })
-      .mockResolvedValueOnce({
-        data: {
-          fileName: 'mewp-internal-validation.xlsx',
-          base64: internalExcelBase64,
-          applicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        },
-      })
-      .mockResolvedValueOnce({
-        data: 'http://minio/attach-ments/reports/mewp.zip',
-      });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
-
-    const req = makeReq({
-      uploadProperties: {
-        bucketName: 'ATTACH_MENTS',
-        fileName: 'mewp.xlsx',
-        subDirectoryInBucket: 'reports',
-      },
-      contentControls: [
-        {
-          title: 'test-reporter-content-control',
-          type: 'testReporter',
-          headingLevel: 2,
-          data: { testPlanId: 34, includeInternalValidationReport: true },
-        },
-      ],
-    });
-    const res = buildRes();
-
-    const result = await controller.createJSONDoc(req, res);
-    expect(result).toBe('http://minio/attach-ments/reports/mewp.zip');
-    expect(axios.post).toHaveBeenLastCalledWith(
-      'http://jw/api/excel/create-zip',
-      expect.objectContaining({
-        uploadProperties: expect.objectContaining({
-          fileName: 'mewp.zip',
-          subDirectoryInBucket: 'reports',
-        }),
-        files: expect.any(Array),
-      })
-    );
+    await controller.createJSONDoc(req, buildRes());
+    expect(axios.post.mock.calls.some((call: any[]) => call[0].includes('/create-zip'))).toBe(false);
   });
 
   function makeFlatReq(overrides: any = {}) {
