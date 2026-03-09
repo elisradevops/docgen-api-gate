@@ -1,10 +1,15 @@
 import { Request, Response } from 'express';
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import mongoose from 'mongoose';
 import { DocumentsGeneratorController } from '../controllers/DocumentsGeneratorController';
 import { MinioController } from '../controllers/MinioController';
 import moment from 'moment';
 import { DatabaseController } from '../controllers/DatabaseController';
 import { DataProviderController } from '../controllers/DataProviderController';
 import { SharePointController } from '../controllers/SharePointController';
+const Minio = require('minio');
 
 export class Routes {
   public documentsGeneratorController: DocumentsGeneratorController = new DocumentsGeneratorController();
@@ -14,6 +19,406 @@ export class Routes {
   public sharePointController: SharePointController = new SharePointController();
 
   public routes(app: any, upload: any): void {
+    app.route('/health').get(async (_req: Request, res: Response) => {
+      const readLocalPackageJson = (): any => {
+        const candidates = [
+          path.resolve(__dirname, '../package.json'),
+          path.resolve(__dirname, '../../package.json'),
+          path.resolve(process.cwd(), 'package.json'),
+        ];
+        for (const packageJsonPath of candidates) {
+          try {
+            if (!fs.existsSync(packageJsonPath)) continue;
+            return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+          } catch {
+            // try next candidate
+          }
+        }
+        return {};
+      };
+
+      const apiPackage = readLocalPackageJson();
+      const checkedAt = new Date().toISOString();
+      type HealthErrorOptions = {
+        endpoint?: string;
+        hint?: string;
+        configKeys?: string[];
+        errorCode?: string;
+      };
+
+      const selfStatus = {
+        key: 'api-gate',
+        displayName: 'API Gate',
+        status: 'up',
+        connectionStatus: 'connected',
+        version: String(apiPackage?.version || 'unknown'),
+        checkedAt,
+      };
+
+      const createDisconnectedStatus = (
+        key: string,
+        displayName: string,
+        error: string,
+        endpoint = '',
+        options: HealthErrorOptions = {},
+      ) => ({
+        key,
+        displayName,
+        status: 'down',
+        connectionStatus: 'disconnected',
+        version: 'n/a',
+        checkedAt,
+        endpoint: options.endpoint || endpoint,
+        error,
+        hint: options.hint,
+        configKeys: options.configKeys,
+        errorCode: options.errorCode,
+      });
+
+      /**
+       * Converts low-level connectivity errors (DNS, refused, timeout, network) into
+       * explicit health diagnostics for the dashboard.
+       */
+      const normalizeProbeError = (
+        error: any,
+        displayName: string,
+        endpoint: string,
+      ): { message: string; hint?: string; errorCode?: string } => {
+        const code = String(error?.code || '').trim().toUpperCase();
+        const message = String(error?.message || '').trim();
+        const composed = `${code} ${message}`.trim();
+
+        const extractDnsHost = (...sources: string[]): string => {
+          for (const source of sources) {
+            const value = String(source || '').trim();
+            if (!value) continue;
+
+            const fromGetaddrinfo = value.match(/getaddrinfo\s+ENOTFOUND\s+([^\s:]+)/i)?.[1];
+            if (fromGetaddrinfo) {
+              return fromGetaddrinfo;
+            }
+
+            const enotfoundMatches = [...value.matchAll(/ENOTFOUND\s+([^\s:]+)/gi)]
+              .map((match) => String(match?.[1] || '').trim())
+              .filter((candidate) => candidate && candidate.toLowerCase() !== 'getaddrinfo');
+            if (enotfoundMatches.length > 0) {
+              return enotfoundMatches[enotfoundMatches.length - 1];
+            }
+          }
+          return '';
+        };
+
+        const fallbackHost = (() => {
+          try {
+            const parsed = new URL(endpoint);
+            return parsed.hostname;
+          } catch {
+            return '';
+          }
+        })();
+
+        if (/\bENOTFOUND\b/i.test(composed)) {
+          const unresolvedHost = extractDnsHost(message, composed) || fallbackHost || 'unknown-host';
+          return {
+            message: `DNS lookup failed for host "${unresolvedHost}" while reaching ${displayName}.`,
+            hint: 'Host/service name may be wrong or not reachable on the Docker network. Verify the configured URL and container name.',
+            errorCode: 'ENOTFOUND',
+          };
+        }
+
+        const refusedMatch = composed.match(/ECONNREFUSED\s+([^\s]+)/i);
+        if (refusedMatch) {
+          return {
+            message: `Connection refused by ${refusedMatch[1]}`,
+            hint: `Verify the service is running and reachable at ${endpoint}.`,
+            errorCode: 'ECONNREFUSED',
+          };
+        }
+
+        if (composed.includes('ETIMEDOUT') || composed.includes('ECONNABORTED')) {
+          return {
+            message: `Connection timed out while reaching ${displayName}`,
+            hint: `Verify the service is reachable at ${endpoint} and responds within timeout.`,
+            errorCode: composed.includes('ETIMEDOUT') ? 'ETIMEDOUT' : 'ECONNABORTED',
+          };
+        }
+
+        const networkMatch = composed.match(/(EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)/i);
+        if (networkMatch) {
+          return {
+            message: `Network is unreachable while reaching ${displayName}`,
+            hint: `Verify container networking and DNS resolution for ${endpoint}.`,
+            errorCode: networkMatch[1],
+          };
+        }
+
+        return {
+          message: message || code || 'Health check failed',
+          errorCode: code || undefined,
+        };
+      };
+
+      const checkMongoDb = () => {
+        const state = Number(mongoose?.connection?.readyState ?? 0);
+        const stateLabelMap: Record<number, string> = {
+          0: 'disconnected',
+          1: 'connected',
+          2: 'connecting',
+          3: 'disconnecting',
+        };
+        const stateLabel = stateLabelMap[state] || 'unknown';
+
+        if (state === 1) {
+          return {
+            key: 'mongodb',
+            displayName: 'MongoDB',
+            status: 'up',
+            connectionStatus: 'connected',
+            version: 'n/a',
+            checkedAt,
+            details: { state, stateLabel },
+          };
+        }
+
+        if (state === 2) {
+          return {
+            key: 'mongodb',
+            displayName: 'MongoDB',
+            status: 'degraded',
+            connectionStatus: 'degraded',
+            version: 'n/a',
+            checkedAt,
+            details: { state, stateLabel },
+            error: `MongoDB is ${stateLabel}`,
+          };
+        }
+
+        return {
+          ...createDisconnectedStatus('mongodb', 'MongoDB', `MongoDB is ${stateLabel}`),
+          details: { state, stateLabel },
+        };
+      };
+
+      const checkMinio = async () => {
+        const endpointRaw = String(process.env.MINIO_ENDPOINT || process.env.MINIOSERVER || '').trim();
+        const accessKey = String(process.env.MINIO_ROOT_USER || '').trim();
+        const secretKey = String(process.env.MINIO_ROOT_PASSWORD || '').trim();
+
+        if (!endpointRaw) {
+          return createDisconnectedStatus('minio', 'MinIO', 'MINIO endpoint is not configured', '', {
+            hint: 'Set one of: MINIO_ENDPOINT, MINIOSERVER',
+            configKeys: ['MINIO_ENDPOINT', 'MINIOSERVER'],
+            errorCode: 'MISSING_SERVICE_URL',
+          });
+        }
+        if (!accessKey || !secretKey) {
+          return createDisconnectedStatus('minio', 'MinIO', 'MINIO credentials are not configured', '', {
+            hint: 'Set MINIO_ROOT_USER and MINIO_ROOT_PASSWORD.',
+            configKeys: ['MINIO_ROOT_USER', 'MINIO_ROOT_PASSWORD'],
+            errorCode: 'MISSING_CREDENTIALS',
+          });
+        }
+
+        let endPoint = endpointRaw;
+        let port = 9000;
+        let useSSL = false;
+        try {
+          if (/^https?:\/\//i.test(endpointRaw)) {
+            const parsed = new URL(endpointRaw);
+            endPoint = parsed.hostname;
+            useSSL = parsed.protocol === 'https:';
+            port = Number(parsed.port) || (useSSL ? 443 : 80);
+          } else {
+            const withoutPath = endpointRaw.split('/')[0];
+            const parts = withoutPath.split(':');
+            endPoint = parts[0];
+            port = Number(parts[1] || 9000);
+          }
+
+          const startedAt = Date.now();
+          const client = new Minio.Client({
+            endPoint,
+            port,
+            useSSL,
+            accessKey,
+            secretKey,
+          });
+
+          await new Promise((resolve, reject) => {
+            client.listBuckets((err: any) => (err ? reject(err) : resolve(true)));
+          });
+
+          return {
+            key: 'minio',
+            displayName: 'MinIO',
+            status: 'up',
+            connectionStatus: 'connected',
+            version: 'n/a',
+            checkedAt,
+            endpoint: `${useSSL ? 'https' : 'http'}://${endPoint}:${port}`,
+            responseTimeMs: Date.now() - startedAt,
+          };
+        } catch (error: any) {
+          const endpoint = `${useSSL ? 'https' : 'http'}://${endPoint}:${port}`;
+          const normalizedError = normalizeProbeError(error, 'MinIO', endpoint);
+          return createDisconnectedStatus(
+            'minio',
+            'MinIO',
+            normalizedError.message || 'MinIO health check failed',
+            endpoint,
+            {
+              hint: normalizedError.hint,
+              configKeys: ['MINIO_ENDPOINT', 'MINIOSERVER'],
+              errorCode: normalizedError.errorCode,
+            },
+          );
+        }
+      };
+
+      const targets = [
+        {
+          key: 'content-control',
+          displayName: 'Content Control',
+          baseUrl: String(process.env.dgContentControlUrl || '').trim(),
+          path: '/health',
+          configKeys: ['dgContentControlUrl'],
+        },
+        {
+          key: 'json-to-word',
+          displayName: 'JSON to Word',
+          baseUrl: String(process.env.jsonToWordPostUrl || '').trim(),
+          path: '/health',
+          configKeys: ['jsonToWordPostUrl'],
+        },
+      ];
+
+      const downstreamServices = await Promise.all(
+        targets.map(async (target) => {
+          if (!target.baseUrl) {
+            return {
+              key: target.key,
+              displayName: target.displayName,
+              status: 'down',
+              connectionStatus: 'disconnected',
+              version: 'unknown',
+              checkedAt,
+              endpoint: '',
+              error: 'Service URL is not configured',
+              hint: `Set ${target.configKeys.join(' or ')}`,
+              configKeys: target.configKeys,
+              errorCode: 'MISSING_SERVICE_URL',
+            };
+          }
+
+          const endpoint = `${target.baseUrl.replace(/\/+$/, '')}${target.path}`;
+          const startedAt = Date.now();
+
+          try {
+            const response = await axios.get(endpoint, {
+              timeout: 5000,
+              validateStatus: () => true,
+            });
+            const responseTimeMs = Date.now() - startedAt;
+            const payload = response?.data || {};
+            const upstreamStatus = String(payload?.status || '');
+            const isUpstreamConnected =
+              response.status >= 200 &&
+              response.status < 300 &&
+              upstreamStatus.toLowerCase() !== 'down' &&
+              upstreamStatus.toLowerCase() !== 'error';
+
+            return {
+              key: target.key,
+              displayName: target.displayName,
+              status: isUpstreamConnected ? upstreamStatus || 'up' : 'down',
+              connectionStatus: isUpstreamConnected ? 'connected' : 'disconnected',
+              version: String(payload?.version || 'unknown'),
+              checkedAt: String(payload?.timestamp || payload?.checkedAt || checkedAt),
+              endpoint,
+              responseTimeMs,
+              packages: payload?.packages,
+              dependencies: Array.isArray(payload?.dependencies) ? payload.dependencies : undefined,
+              error: isUpstreamConnected ? undefined : payload?.error || `HTTP ${response.status}`,
+              hint: isUpstreamConnected ? undefined : payload?.hint,
+              configKeys: target.configKeys,
+              errorCode: isUpstreamConnected ? undefined : payload?.errorCode,
+            };
+          } catch (error: any) {
+            const normalizedError = normalizeProbeError(error, target.displayName, endpoint);
+            return {
+              key: target.key,
+              displayName: target.displayName,
+              status: 'down',
+              connectionStatus: 'disconnected',
+              version: 'unknown',
+              checkedAt,
+              endpoint,
+              responseTimeMs: Date.now() - startedAt,
+              error: normalizedError.message || 'Health check failed',
+              hint: normalizedError.hint,
+              configKeys: target.configKeys,
+              errorCode: normalizedError.errorCode,
+            };
+          }
+        }),
+      );
+
+      const getServiceDependencies = (service: any) =>
+        Array.isArray(service?.dependencies) ? service.dependencies : [];
+
+      const downstreamServicesWithDependencies = downstreamServices.map((service) => {
+        if (service?.key !== 'content-control') {
+          return service;
+        }
+
+        const existingDependencies = getServiceDependencies(service);
+        const mergedDependencies = existingDependencies;
+        const hasDisconnectedDependency = mergedDependencies.some(
+          (dependency: any) => String(dependency?.connectionStatus || '').toLowerCase() !== 'connected',
+        );
+        const isServiceUpAndConnected =
+          String(service?.status || '').toLowerCase() === 'up' &&
+          String(service?.connectionStatus || '').toLowerCase() === 'connected';
+
+        return {
+          ...service,
+          status: hasDisconnectedDependency && isServiceUpAndConnected ? 'degraded' : service.status,
+          connectionStatus:
+            hasDisconnectedDependency && isServiceUpAndConnected
+              ? 'degraded'
+              : service.connectionStatus,
+          dependencies: mergedDependencies,
+        };
+      });
+
+      const apiGateDependencies = await Promise.all([
+        checkMinio(),
+        Promise.resolve(checkMongoDb()),
+      ]);
+
+      const monitoredDependencies = downstreamServicesWithDependencies.flatMap((service) =>
+        getServiceDependencies(service),
+      );
+
+      const hasDisconnectedService = [...downstreamServicesWithDependencies, ...apiGateDependencies, ...monitoredDependencies].some(
+        (service) => String(service?.connectionStatus || '').toLowerCase() !== 'connected',
+      );
+
+      const apiGateService = {
+        ...selfStatus,
+        dependencies: apiGateDependencies,
+      };
+
+      res.status(200).json({
+        service: 'dg-api-gate',
+        status: hasDisconnectedService ? 'degraded' : 'up',
+        connectionStatus: hasDisconnectedService ? 'degraded' : 'connected',
+        version: selfStatus.version,
+        checkedAt,
+        services: [apiGateService, ...downstreamServicesWithDependencies],
+      });
+    });
+
     app.route('/jsonDocument').get((req: Request, res: Response) => {
       res.status(200).json({ status: 'online - ' + moment().format() });
     });

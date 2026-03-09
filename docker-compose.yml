@@ -53,7 +53,7 @@ services:
     ports:
       - '3000:3000'
   json-to-word:
-    image: assafushy/json-to-word:latest
+    image: elisradevops/docgen-json-to-word:latest
     ports:
       - '5000:5000'
   s3:
