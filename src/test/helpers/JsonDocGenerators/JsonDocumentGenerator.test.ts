@@ -101,6 +101,7 @@ describe('JSONDocumentGenerator', () => {
       expect.objectContaining({
         title: 'CC2',
         type: 'paragraph',
+        skin: 'skin',
         headingLevel: 2,
         data: { type: 'query', queryId: 'q2' },
         isExcelSpreadsheet: false,

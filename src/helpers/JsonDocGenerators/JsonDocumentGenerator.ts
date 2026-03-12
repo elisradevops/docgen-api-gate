@@ -23,6 +23,7 @@ export class JSONDocumentGenerator {
               contentControlOptions: {
                 title: contentControl.title,
                 type: contentControl.type,
+                skin: contentControl.skin,
                 headingLevel: contentControl.headingLevel,
                 data: contentControl.data,
                 isExcelSpreadsheet: contentControl.isExcelSpreadsheet || false,

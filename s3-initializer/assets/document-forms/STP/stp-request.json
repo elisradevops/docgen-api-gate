@@ -1,0 +1,13 @@
+{
+  "documentTitle": "stp-document",
+  "templateFiles": ["stp-template"],
+  "contentControls": [
+    {
+      "type": "test-stp-description",
+      "title": "tests-description-content-control",
+      "skin": "test-stp"
+    }
+  ],
+  "tabIndex": 1,
+  "isDebug": true
+}
