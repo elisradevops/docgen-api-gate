@@ -5,6 +5,11 @@ import logger from '../util/logger';
 import { getMinioFiles } from '../helpers/sharePointHelpers/sharePointHelper';
 import { SharePointConfig as ConfigModel } from '../models/SharePointConfig';
 
+const VALID_TEMPLATE_DOC_TYPES = ['STD', 'STP', 'STR', 'SVD', 'SRS'] as const;
+
+const isValidTemplateDocType = (docType: string) =>
+  VALID_TEMPLATE_DOC_TYPES.includes((docType || '').toUpperCase() as (typeof VALID_TEMPLATE_DOC_TYPES)[number]);
+
 export class SharePointController {
   private sharePointService: SharePointService;
   private minioController: MinioController;
@@ -90,18 +95,17 @@ export class SharePointController {
       const conflicts: any[] = [];
       const newFiles: any[] = [];
       const invalidFiles: any[] = [];
-      const VALID_DOC_TYPES = ['STD', 'STR', 'SVD', 'SRS'];
 
       for (const spFile of spFiles) {
         const targetDocType = spFile.docType || docType || '';
 
         // Skip files with invalid docType
-        if (!targetDocType || !VALID_DOC_TYPES.includes(targetDocType.toUpperCase())) {
+        if (!targetDocType || !isValidTemplateDocType(targetDocType)) {
           invalidFiles.push({
             name: spFile.name,
             size: spFile.length,
             docType: targetDocType || 'none',
-            error: `Invalid docType "${targetDocType}". Valid types are: ${VALID_DOC_TYPES.join(', ')}`,
+            error: `Invalid docType "${targetDocType}". Valid types are: ${VALID_TEMPLATE_DOC_TYPES.join(', ')}`,
           });
           continue;
         }
@@ -280,16 +284,15 @@ export class SharePointController {
           }
 
           // Validate docType against allowed values
-          const VALID_DOC_TYPES = ['STD', 'STR', 'SVD', 'SRS'];
-          if (!VALID_DOC_TYPES.includes(targetDocType.toUpperCase())) {
+          if (!isValidTemplateDocType(targetDocType)) {
             logger.warn(
               `Skipping ${
                 file.name
-              } - invalid docType: ${targetDocType}. Valid types are: ${VALID_DOC_TYPES.join(', ')}`
+              } - invalid docType: ${targetDocType}. Valid types are: ${VALID_TEMPLATE_DOC_TYPES.join(', ')}`
             );
             syncResults.failedFiles.push({
               name: file.name,
-              error: `Invalid docType "${targetDocType}". Valid types are: ${VALID_DOC_TYPES.join(', ')}`,
+              error: `Invalid docType "${targetDocType}". Valid types are: ${VALID_TEMPLATE_DOC_TYPES.join(', ')}`,
             });
             continue;
           }
