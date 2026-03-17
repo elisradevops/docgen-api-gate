@@ -205,6 +205,33 @@ describe('SharePointController', () => {
       ]);
     });
 
+    test('accepts SYSRS as a valid docType (not invalid)', async () => {
+      const files = [{ name: 'SYSRS/sysrs-template.dotx', length: 14, docType: 'SYSRS' }];
+      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockGetMinioFiles.mockResolvedValueOnce([]);
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.invalidFiles.length).toBe(0);
+      expect(res.body.newFiles).toEqual([
+        expect.objectContaining({ name: 'SYSRS/sysrs-template.dotx', docType: 'SYSRS' }),
+      ]);
+    });
+
     test('skips identical files without conflicts or new files', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD' }];
       mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
@@ -325,6 +352,39 @@ describe('SharePointController', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.syncedFiles).toContain('STP/stp-template.dotx');
+      expect(res.body.failedFiles).toEqual([]);
+    });
+
+    test('uploads SYSRS files without docType validation failure', async () => {
+      const files = [
+        {
+          name: 'SYSRS/sysrs-template.dotx',
+          length: 21,
+          docType: 'SYSRS',
+          serverRelativeUrl: '/sysrs',
+        },
+      ];
+      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockGetMinioFiles.mockResolvedValueOnce([]);
+      mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('sysrs'));
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.syncedFiles).toContain('SYSRS/sysrs-template.dotx');
       expect(res.body.failedFiles).toEqual([]);
     });
 

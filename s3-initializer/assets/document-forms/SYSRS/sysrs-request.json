@@ -1,0 +1,13 @@
+{
+  "documentTitle": "sysrs-document",
+  "templateFiles": ["sysrs-template"],
+  "contentControls": [
+    {
+      "type": "sysrs-document",
+      "title": "sysrs-document-content-control",
+      "skin": "sysrs-skin"
+    }
+  ],
+  "tabIndex": 5,
+  "isDebug": true
+}

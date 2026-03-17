@@ -11,7 +11,7 @@ import logger from '../../util/logger';
  * @param minioController - Instance of MinioController
  * @param bucketName - MinIO bucket name
  * @param projectName - Project name
- * @param docType - Document type (STD, STR, SVD, SRS)
+ * @param docType - Document type (STD, STP, STR, SVD, SRS, SYSRS)
  * @returns Array of existing files with name, etag, and size
  */
 export async function getMinioFiles(
