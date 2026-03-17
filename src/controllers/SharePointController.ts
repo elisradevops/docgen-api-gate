@@ -5,7 +5,7 @@ import logger from '../util/logger';
 import { getMinioFiles } from '../helpers/sharePointHelpers/sharePointHelper';
 import { SharePointConfig as ConfigModel } from '../models/SharePointConfig';
 
-const VALID_TEMPLATE_DOC_TYPES = ['STD', 'STP', 'STR', 'SVD', 'SRS'] as const;
+const VALID_TEMPLATE_DOC_TYPES = ['STD', 'STP', 'STR', 'SVD', 'SRS', 'SYSRS'] as const;
 
 const isValidTemplateDocType = (docType: string) =>
   VALID_TEMPLATE_DOC_TYPES.includes((docType || '').toUpperCase() as (typeof VALID_TEMPLATE_DOC_TYPES)[number]);
