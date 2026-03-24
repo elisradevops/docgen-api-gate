@@ -29,14 +29,14 @@ export class JSONDocumentGenerator {
                 isExcelSpreadsheet: contentControl.isExcelSpreadsheet || false,
               },
               formattingSettings: documentRequest.formattingSettings,
-            }
+            },
           );
           return contentControlResponse.data;
         } catch (err) {
           logger.error(`Error adding content control ${contentControl.title}`);
           throw err;
         }
-      })
+      }),
     );
   }
 }
