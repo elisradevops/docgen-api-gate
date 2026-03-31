@@ -100,6 +100,7 @@ describe('DataProviderController', () => {
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.body).toEqual({
       message: 'Upstream error calling /azure/git/repos/r1/pull-requests',
+      upstreamPath: '/azure/git/repos/r1/pull-requests',
       error: { msg: 'cc down' },
     });
   });
@@ -161,6 +162,90 @@ describe('DataProviderController', () => {
         req: { headers, params: { queryId: 'q1' }, query: { teamProjectId: 'tp' } },
         path: '/azure/queries/q1/results',
         payload: { orgUrl: 'https://org', token: 'pat', teamProjectId: 'tp' },
+      },
+      {
+        name: 'getHistoricalQueries',
+        call: (c, r, s) => c.getHistoricalQueries(r, s),
+        req: { headers, query: { teamProjectId: 'tp', path: 'shared' } },
+        path: '/azure/queries/historical',
+        payload: { orgUrl: 'https://org', token: 'pat', teamProjectId: 'tp', path: 'shared' },
+      },
+      {
+        name: 'getHistoricalQueryResults',
+        call: (c, r, s) => c.getHistoricalQueryResults(r, s),
+        req: {
+          headers,
+          params: { queryId: 'q1' },
+          query: { teamProjectId: 'tp', asOf: '2026-01-01T10:00:00.000Z' },
+        },
+        path: '/azure/queries/q1/historical-results',
+        payload: {
+          orgUrl: 'https://org',
+          token: 'pat',
+          teamProjectId: 'tp',
+          asOf: '2026-01-01T10:00:00.000Z',
+        },
+      },
+      {
+        name: 'compareHistoricalQueryResults',
+        call: (c, r, s) => c.compareHistoricalQueryResults(r, s),
+        req: {
+          headers,
+          params: { queryId: 'q1' },
+          query: {
+            teamProjectId: 'tp',
+            baselineAsOf: '2025-12-22T17:08:00.000Z',
+            compareToAsOf: '2025-12-28T08:57:00.000Z',
+          },
+        },
+        path: '/azure/queries/q1/historical-compare',
+        payload: {
+          orgUrl: 'https://org',
+          token: 'pat',
+          teamProjectId: 'tp',
+          baselineAsOf: '2025-12-22T17:08:00.000Z',
+          compareToAsOf: '2025-12-28T08:57:00.000Z',
+        },
+      },
+      {
+        name: 'getTimeMachineAsOf',
+        call: (c, r, s) => c.getTimeMachineAsOf(r, s),
+        req: {
+          headers,
+          body: {
+            teamProject: 'tp',
+            queryId: 'q1',
+            asOf: '2026-01-01T10:00:00.000Z',
+          },
+        },
+        path: '/azure/queries/q1/historical-results',
+        payload: {
+          orgUrl: 'https://org',
+          token: 'pat',
+          teamProjectId: 'tp',
+          asOf: '2026-01-01T10:00:00.000Z',
+        },
+      },
+      {
+        name: 'compareTimeMachine',
+        call: (c, r, s) => c.compareTimeMachine(r, s),
+        req: {
+          headers,
+          body: {
+            teamProject: 'tp',
+            queryId: 'q1',
+            baselineTimestamp: '2025-12-22T17:08:00.000Z',
+            compareToTimestamp: '2025-12-28T08:57:00.000Z',
+          },
+        },
+        path: '/azure/queries/q1/historical-compare',
+        payload: {
+          orgUrl: 'https://org',
+          token: 'pat',
+          teamProjectId: 'tp',
+          baselineAsOf: '2025-12-22T17:08:00.000Z',
+          compareToAsOf: '2025-12-28T08:57:00.000Z',
+        },
       },
       {
         name: 'getTestPlansList',
@@ -262,6 +347,134 @@ describe('DataProviderController', () => {
     });
   });
 
+  test('getTimeMachineAsOf: 400 when required body fields are missing', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      body: { teamProject: 'tp', queryId: '', asOf: '' },
+    };
+    const res = buildRes();
+
+    await controller.getTimeMachineAsOf(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.body).toEqual({
+      message: 'teamProject, queryId, and asOf are required',
+    });
+  });
+
+  test('compareTimeMachine: 400 when required body fields are missing', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      body: { teamProject: 'tp', queryId: 'q1', baselineTimestamp: '', compareToTimestamp: '' },
+    };
+    const res = buildRes();
+
+    await controller.compareTimeMachine(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.body).toEqual({
+      message: 'teamProject, queryId, baselineTimestamp, and compareToTimestamp are required',
+    });
+  });
+
+  test('compareHistoricalQueryResults: 400 when compareToAsOf is not later than baselineAsOf', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      params: { queryId: 'q1' },
+      query: {
+        teamProjectId: 'tp',
+        baselineAsOf: '2026-03-31T12:00:00.000Z',
+        compareToAsOf: '2026-03-31T11:00:00.000Z',
+      },
+    };
+    const res = buildRes();
+
+    await controller.compareHistoricalQueryResults(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.body).toEqual({
+      message: 'compareToAsOf must be later than baselineAsOf',
+    });
+    expect(axiosMod.create().post).not.toHaveBeenCalled();
+  });
+
+  test('compareTimeMachine: 400 when timestamps are equal', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      body: {
+        teamProject: 'tp',
+        queryId: 'q1',
+        baselineTimestamp: '2026-03-31T11:00:00.000Z',
+        compareToTimestamp: '2026-03-31T11:00:00.000Z',
+      },
+    };
+    const res = buildRes();
+
+    await controller.compareTimeMachine(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.body).toEqual({
+      message: 'baselineTimestamp and compareToTimestamp must be different',
+    });
+    expect(axiosMod.create().post).not.toHaveBeenCalled();
+  });
+
+  test('getSharedQueries: forwards path as provided', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      query: { teamProjectId: 'tp', docType: 'STD', path: 'Shared Queries' },
+    };
+    const res = buildRes();
+    axiosMod.create().post.mockResolvedValueOnce({ data: { ok: true } });
+
+    await controller.getSharedQueries(req, res);
+
+    expect(axiosMod.create().post).toHaveBeenCalledWith('/azure/queries', {
+      orgUrl: 'https://org',
+      token: 'pat',
+      teamProjectId: 'tp',
+      path: 'Shared Queries',
+      docType: 'STD',
+    });
+  });
+
+  test('getHistoricalQueries: forwards path as provided', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      query: { teamProjectId: 'tp', path: 'Shared Queries' },
+    };
+    const res = buildRes();
+    axiosMod.create().post.mockResolvedValueOnce({ data: { ok: true } });
+
+    await controller.getHistoricalQueries(req, res);
+
+    expect(axiosMod.create().post).toHaveBeenCalledWith('/azure/queries/historical', {
+      orgUrl: 'https://org',
+      token: 'pat',
+      teamProjectId: 'tp',
+      path: 'Shared Queries',
+    });
+  });
+
+  test('getSharedQueries: defaults to shared when path is missing', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      query: { teamProjectId: 'tp', docType: 'STD' },
+    };
+    const res = buildRes();
+    axiosMod.create().post.mockResolvedValueOnce({ data: { ok: true } });
+
+    await controller.getSharedQueries(req, res);
+
+    expect(axiosMod.create().post).toHaveBeenCalledWith('/azure/queries', {
+      orgUrl: 'https://org',
+      token: 'pat',
+      teamProjectId: 'tp',
+      path: 'shared',
+      docType: 'STD',
+    });
+  });
+
   /**
    * Missing credentials suite
    * Ensures all relevant methods return 400 when authentication headers are not provided.
@@ -274,6 +487,11 @@ describe('DataProviderController', () => {
       'getSharedQueries',
       'getFieldsByType',
       'getQueryResults',
+      'getHistoricalQueries',
+      'getHistoricalQueryResults',
+      'compareHistoricalQueryResults',
+      'getTimeMachineAsOf',
+      'compareTimeMachine',
       'getTestPlansList',
       'getTestSuitesByPlan',
       'getGitRepoList',

@@ -136,3 +136,37 @@ this content control can be test based or query based.
 ```
 
 the end!
+
+## Historical Query Endpoints
+
+The API gate exposes both contract-level and legacy Azure historical-query routes used by the standalone frontend tab.
+
+- `POST /time-machine/as-of`
+  - Body: `teamProject`, `queryId`, `asOf` (ISO date-time)
+  - Contract entrypoint. Internally mapped to historical snapshot retrieval.
+
+- `POST /time-machine/compare`
+  - Body: `teamProject`, `queryId`, `baselineTimestamp`, `compareToTimestamp` (ISO date-times)
+  - Contract entrypoint. Internally mapped to historical compare retrieval.
+
+Legacy compatibility routes remain available:
+
+- `GET /azure/queries/historical`
+  - Query params: `teamProjectId`, optional `path` (default: `shared`)
+  - Returns a flat list of shared queries `{ id, queryName, path }`.
+
+- `GET /azure/queries/:queryId/historical-results`
+  - Query params: `teamProjectId`, `asOf` (ISO date-time)
+  - Returns the query snapshot at the requested timestamp with flat work-item rows:
+    - `id`, `workItemType`, `title`, `state`, `areaPath`, `iterationPath`, `versionId`, `versionTimestamp`, `workItemUrl`
+
+- `GET /azure/queries/:queryId/historical-compare`
+  - Query params: `teamProjectId`, `baselineAsOf`, `compareToAsOf` (ISO date-times)
+  - Returns compare rows and summary counts according to noise-control rules:
+    - statuses: `Added`, `Deleted`, `Changed`, `No changes`
+    - changed fields tracked: `Description`, `Title`, `State`, `Steps` (Test Case), `Test Phase`, `Related Link Count` (Test Case)
+
+### Historical Compare Word Report (template-less)
+
+`POST /jsonDocument/create` supports Historical Compare report generation with an empty `templateFile`.
+The request should include a `historical-compare-report` content control and the compare payload in `data.compareResult`.

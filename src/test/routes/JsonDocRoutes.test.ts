@@ -655,13 +655,26 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     const dp: any = routes.dataProviderController;
 
-    const cases: Array<{ method: 'get'; path: string; handler: string }> = [
+    const cases: Array<{ method: 'get' | 'post'; path: string; handler: string }> = [
       { method: 'get', path: '/azure/check-org-url', handler: 'checkOrgUrl' },
       { method: 'get', path: '/azure/user/profile', handler: 'getUserProfile' },
       { method: 'get', path: '/azure/link-types', handler: 'getCollectionLinkTypes' },
       { method: 'get', path: '/azure/queries', handler: 'getSharedQueries' },
+      { method: 'get', path: '/azure/queries/historical', handler: 'getHistoricalQueries' },
       { method: 'get', path: '/azure/fields', handler: 'getFieldsByType' },
       { method: 'get', path: '/azure/queries/q1/results', handler: 'getQueryResults' },
+      {
+        method: 'get',
+        path: '/azure/queries/q1/historical-results',
+        handler: 'getHistoricalQueryResults',
+      },
+      {
+        method: 'get',
+        path: '/azure/queries/q1/historical-compare',
+        handler: 'compareHistoricalQueryResults',
+      },
+      { method: 'post', path: '/time-machine/as-of', handler: 'getTimeMachineAsOf' },
+      { method: 'post', path: '/time-machine/compare', handler: 'compareTimeMachine' },
       { method: 'get', path: '/azure/tests/plans', handler: 'getTestPlansList' },
       { method: 'get', path: '/azure/tests/plans/1/suites', handler: 'getTestSuitesByPlan' },
       { method: 'get', path: '/azure/git/repos', handler: 'getGitRepoList' },

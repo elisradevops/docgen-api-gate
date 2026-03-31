@@ -74,6 +74,47 @@ describe('DocumentsGeneratorController', () => {
     expect(axios.post).toHaveBeenNthCalledWith(2, 'http://jw/api/word/create', expect.any(Object));
   });
 
+  test('supports template-less requests (empty templateFile) for WordService generation', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { templatePath: '' } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+
+    const req = makeReq({
+      templateFile: '',
+      contentControls: [
+        {
+          title: 'historical-compare-report-content-control',
+          type: 'historical-compare-report',
+          skin: 'time-machine-report',
+          headingLevel: 1,
+          data: {
+            teamProjectName: 'project',
+            queryName: 'Shared Query',
+            compareResult: { rows: [] },
+          },
+        },
+      ],
+    });
+
+    const result = await controller.createJSONDoc(req, buildRes());
+    expect(result).toEqual({ url: 'http://doc' });
+    expect(axios.post).toHaveBeenNthCalledWith(
+      1,
+      'http://cc/generate-doc-template',
+      expect.objectContaining({
+        templateUrl: '',
+      })
+    );
+    expect(axios.post).toHaveBeenNthCalledWith(
+      2,
+      'http://jw/api/word/create',
+      expect.objectContaining({
+        templatePath: '',
+      })
+    );
+  });
+
   /**
    * upstream error handling
    * If the template generation upstream call fails, controller rejects with upstream message.
