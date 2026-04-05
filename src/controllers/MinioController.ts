@@ -8,6 +8,8 @@ import path from 'path';
 var Minio = require('minio');
 
 export class MinioController {
+  private static readonly ENCODED_HEADER_VALUE_PREFIX = "utf8''";
+
   private getMewpExternalMaxBytes() {
     const configured = Number(process.env.MEWP_EXTERNAL_MAX_FILE_SIZE_BYTES || 0);
     return Number.isFinite(configured) && configured > 0 ? configured : 20 * 1024 * 1024;
@@ -57,6 +59,117 @@ export class MinioController {
     return 'application/octet-stream';
   }
 
+  private sanitizeHeaderSourceValue(value: unknown): string {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return '';
+    }
+
+    return raw
+      .replace(/\r|\n/g, ' ')
+      .replace(/[\u0000-\u001F\u007F]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private isVisibleAscii(value: string): boolean {
+    return /^[\x20-\x7E]*$/.test(value);
+  }
+
+  private encodeMetadataHeaderValue(value: unknown, maxLength = 1024): string {
+    const cleaned = this.sanitizeHeaderSourceValue(value);
+    if (!cleaned || maxLength <= 0) {
+      return '';
+    }
+
+    const normalized = cleaned.slice(0, maxLength);
+    if (this.isVisibleAscii(normalized)) {
+      return normalized;
+    }
+
+    const prefix = MinioController.ENCODED_HEADER_VALUE_PREFIX;
+    const buildEncoded = (candidate: string) => {
+      try {
+        return `${prefix}${encodeURIComponent(candidate)}`;
+      } catch {
+        return '';
+      }
+    };
+
+    let encoded = buildEncoded(normalized);
+    if (encoded && encoded.length <= maxLength) {
+      return encoded;
+    }
+
+    const estimatedLength = Math.max(
+      1,
+      Math.min(normalized.length, Math.floor((maxLength - prefix.length) / 3)),
+    );
+    for (let i = estimatedLength; i > 0; i--) {
+      encoded = buildEncoded(normalized.slice(0, i));
+      if (encoded && encoded.length <= maxLength) {
+        return encoded;
+      }
+    }
+
+    return '';
+  }
+
+  private decodeMetadataHeaderValue(value: unknown): string {
+    const raw = this.sanitizeHeaderSourceValue(value);
+    if (!raw) {
+      return '';
+    }
+
+    const prefix = MinioController.ENCODED_HEADER_VALUE_PREFIX;
+    if (!raw.startsWith(prefix)) {
+      return raw;
+    }
+
+    try {
+      return this.sanitizeHeaderSourceValue(decodeURIComponent(raw.slice(prefix.length)));
+    } catch {
+      return raw;
+    }
+  }
+
+  private getFirstMetadataValue(metaData: Record<string, any>, keys: string[]): string {
+    for (const key of keys) {
+      const value = metaData?.[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value;
+      }
+    }
+
+    return '';
+  }
+
+  private getAsciiFallbackFilename(fileName: string, maxLength = 120): string {
+    const cleaned = this.sanitizeHeaderSourceValue(fileName);
+    const withoutQuotes = cleaned.replace(/["\\]/g, '_').replace(/;/g, '_');
+    const ascii = withoutQuotes
+      .normalize('NFKD')
+      .replace(/[^\x20-\x7E]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const fallback = (ascii || 'download').slice(0, maxLength);
+    return fallback || 'download';
+  }
+
+  private buildContentDispositionHeader(fileName: string): string {
+    const cleaned = this.sanitizeHeaderSourceValue(fileName).slice(0, 180) || 'download';
+    const fallback = this.getAsciiFallbackFilename(cleaned);
+    let encodedName = '';
+
+    try {
+      encodedName = encodeURIComponent(cleaned);
+    } catch {
+      encodedName = encodeURIComponent(fallback);
+    }
+
+    return `attachment; filename="${fallback}"; filename*=UTF-8''${encodedName}`;
+  }
+
   public async getBucketFileList(req: Request, res: Response) {
     return new Promise((resolve, reject) => {
       let jsonReq = JSON.stringify(req.params);
@@ -84,7 +197,9 @@ export class MinioController {
 
       const { docType, teamProjectName, isExternalUrl, createdBy, createdById } = req.body;
       let { bucketName } = req.body;
-      const uploadPurpose = String(req.body?.purpose || '').trim().toLowerCase();
+      const uploadPurpose = String(req.body?.purpose || '')
+        .trim()
+        .toLowerCase();
       const isMewpExternalIngestion =
         uploadPurpose === 'mewpexternalingestion' || uploadPurpose === 'mewp-external-ingestion';
 
@@ -105,7 +220,7 @@ export class MinioController {
           .toLowerCase();
         if (normalizedDocType !== 'bugs' && normalizedDocType !== 'l3l4') {
           return reject(
-            this.toUploadError(`Invalid MEWP ingestion docType '${docType}'. Allowed values: bugs, l3l4`)
+            this.toUploadError(`Invalid MEWP ingestion docType '${docType}'. Allowed values: bugs, l3l4`),
           );
         }
         if (!String(teamProjectName || '').trim()) {
@@ -125,8 +240,8 @@ export class MinioController {
           return reject(
             this.toUploadError(
               `File size is invalid. Maximum allowed size is ${maxBytes} bytes.`,
-              fileSize > maxBytes ? 413 : 422
-            )
+              fileSize > maxBytes ? 413 : 422,
+            ),
           );
         }
 
@@ -159,10 +274,16 @@ export class MinioController {
       const fileStat = fs.statSync(filePath);
       const uploadMetadata: Record<string, string> = {};
       if (String(createdBy || '').trim()) {
-        uploadMetadata.createdBy = String(createdBy).trim();
+        const safeCreatedBy = this.encodeMetadataHeaderValue(createdBy, 256);
+        if (safeCreatedBy) {
+          uploadMetadata.createdBy = safeCreatedBy;
+        }
       }
       if (String(createdById || '').trim()) {
-        uploadMetadata.createdById = String(createdById).trim();
+        const safeCreatedById = this.encodeMetadataHeaderValue(createdById, 256);
+        if (safeCreatedById) {
+          uploadMetadata.createdById = safeCreatedById;
+        }
       }
       // Ensure the bucket exists before uploading the file
       s3Client
@@ -200,26 +321,26 @@ export class MinioController {
             fileStat.size,
             uploadMetadata,
             (err, etag) => {
-            // Delete the temporary file after uploading to Minio
-            fs.unlinkSync(filePath);
-            if (err) {
-              logger.error('Error uploading file:', err);
-              return reject(err);
-            }
-            return resolve({
-              fileItem: {
-                url,
-                text: objectName,
-                objectName,
-                bucketName: minioRequest.bucketName,
-                etag: etag?.etag || undefined,
-                name: req.file.originalname,
-                contentType: req.file.mimetype,
-                sizeBytes: Number(req.file.size || fileStat.size || 0),
-                sourceType: isMewpExternalIngestion ? 'mewpExternalIngestion' : 'generic',
-              },
-            });
-            }
+              // Delete the temporary file after uploading to Minio
+              fs.unlinkSync(filePath);
+              if (err) {
+                logger.error('Error uploading file:', err);
+                return reject(err);
+              }
+              return resolve({
+                fileItem: {
+                  url,
+                  text: objectName,
+                  objectName,
+                  bucketName: minioRequest.bucketName,
+                  etag: etag?.etag || undefined,
+                  name: req.file.originalname,
+                  contentType: req.file.mimetype,
+                  sizeBytes: Number(req.file.size || fileStat.size || 0),
+                  sourceType: isMewpExternalIngestion ? 'mewpExternalIngestion' : 'generic',
+                },
+              });
+            },
           );
         })
         .catch((err) => {
@@ -303,7 +424,7 @@ export class MinioController {
             logger.error(streamErr);
             return reject(streamErr);
           });
-        }
+        },
       );
     });
   }
@@ -365,7 +486,7 @@ export class MinioController {
         const fileName = objectName.split('/').pop() || 'file';
         res.status(200);
         res.setHeader('Content-Type', this.getContentType(fileName));
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+        res.setHeader('Content-Disposition', this.buildContentDispositionHeader(fileName));
         dataStream.on('end', () => {
           resolve(undefined);
         });
@@ -429,10 +550,10 @@ export class MinioController {
               });
 
             logger.info(
-              `Bucket ${minioRequest.bucketName} created successfully in "${process.env.MINIO_REGION}".`
+              `Bucket ${minioRequest.bucketName} created successfully in "${process.env.MINIO_REGION}".`,
             );
             return resolve(
-              `Bucket ${minioRequest.bucketName} created successfully in ${process.env.MINIO_REGION}.`
+              `Bucket ${minioRequest.bucketName} created successfully in ${process.env.MINIO_REGION}.`,
             );
           }
         })
@@ -488,7 +609,7 @@ export class MinioController {
     minioRequest: MinioRequest,
     url: string,
     objects: any[],
-    resolve: (value: unknown) => void
+    resolve: (value: unknown) => void,
   ) {
     let docType = req.query.docType;
     let projectName = req.query.projectName;
@@ -511,7 +632,8 @@ export class MinioController {
     stream.on('data', (obj) => {
       const rawPrefix = typeof obj?.prefix === 'string' ? String(obj.prefix).trim() : '';
       const rawName = String(obj?.name || '').trim();
-      const isDocFormsRootListing = minioRequest.bucketName === 'document-forms' && docType === undefined && !recurse;
+      const isDocFormsRootListing =
+        minioRequest.bucketName === 'document-forms' && docType === undefined && !recurse;
 
       // listObjectsV2 can emit "prefix" entries without a name when not fully recursive.
       // We need those for the "document-forms" root listing (to build doc type tabs),
@@ -532,7 +654,11 @@ export class MinioController {
 
       if (!rawName) return;
       // Hide internal sidecar objects (full input snapshots) from normal listings.
-      if (rawName.includes('/__input__/') || rawName.startsWith('__input__/') || rawName.endsWith('.input.json')) {
+      if (
+        rawName.includes('/__input__/') ||
+        rawName.startsWith('__input__/') ||
+        rawName.endsWith('.input.json')
+      ) {
         return;
       }
       const fileName = rawName.includes('/') && !recurse ? rawName.split('/').pop() : rawName;
@@ -544,34 +670,43 @@ export class MinioController {
         try {
           if (obj?.name) {
             const stat = await s3Client.statObject(minioRequest.bucketName, obj.name);
-            obj.createdBy =
-              stat.metaData['createdBy'] ||
-              stat.metaData['createdby'] ||
-              stat.metaData['x-amz-meta-createdBy'] ||
-              stat.metaData['x-amz-meta-createdby'] ||
-              '';
-            obj.createdById =
-              stat.metaData['createdById'] ||
-              stat.metaData['createdbyid'] ||
-              stat.metaData['x-amz-meta-createdById'] ||
-              stat.metaData['x-amz-meta-createdbyid'] ||
-              '';
-            obj.inputSummary =
-              stat.metaData['inputSummary'] ||
-              stat.metaData['inputsummary'] ||
-              stat.metaData['x-amz-meta-inputSummary'] ||
-              stat.metaData['x-amz-meta-inputsummary'] ||
-              stat.metaData['input'] ||
-              stat.metaData['generationinput'] ||
-              '';
-            obj.inputDetailsKey =
-              stat.metaData['inputDetailsKey'] ||
-              stat.metaData['inputdetailskey'] ||
-              stat.metaData['x-amz-meta-inputDetailsKey'] ||
-              stat.metaData['x-amz-meta-inputdetailskey'] ||
-              stat.metaData['inputDetails'] ||
-              stat.metaData['inputdetails'] ||
-              '';
+            const metaData = stat?.metaData || {};
+            obj.createdBy = this.decodeMetadataHeaderValue(
+              this.getFirstMetadataValue(metaData, [
+                'createdBy',
+                'createdby',
+                'x-amz-meta-createdBy',
+                'x-amz-meta-createdby',
+              ]),
+            );
+            obj.createdById = this.decodeMetadataHeaderValue(
+              this.getFirstMetadataValue(metaData, [
+                'createdById',
+                'createdbyid',
+                'x-amz-meta-createdById',
+                'x-amz-meta-createdbyid',
+              ]),
+            );
+            obj.inputSummary = this.decodeMetadataHeaderValue(
+              this.getFirstMetadataValue(metaData, [
+                'inputSummary',
+                'inputsummary',
+                'x-amz-meta-inputSummary',
+                'x-amz-meta-inputsummary',
+                'input',
+                'generationinput',
+              ]),
+            );
+            obj.inputDetailsKey = this.decodeMetadataHeaderValue(
+              this.getFirstMetadataValue(metaData, [
+                'inputDetailsKey',
+                'inputdetailskey',
+                'x-amz-meta-inputDetailsKey',
+                'x-amz-meta-inputdetailskey',
+                'inputDetails',
+                'inputdetails',
+              ]),
+            );
           }
         } catch (error) {
           logger.error(`Error fetching metadata for ${obj.name}:`, error);

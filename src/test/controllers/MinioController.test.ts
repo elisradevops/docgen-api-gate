@@ -1,5 +1,5 @@
 jest.mock('fs', () => ({
-  createReadStream: jest.fn(() => ({} as any)),
+  createReadStream: jest.fn(() => ({}) as any),
   statSync: jest.fn(() => ({ size: 123 })),
   unlinkSync: jest.fn(),
 }));
@@ -80,7 +80,11 @@ describe('MinioController', () => {
     const stream = makeStream([{ name: 'p/STD/file1.dotx', etag: '123' }]);
     mockS3.listObjectsV2.mockReturnValueOnce(stream);
     mockS3.statObject.mockResolvedValueOnce({
-      metaData: { createdBy: 'alice', inputSummary: 'docType=STD', inputDetailsKey: 'p/STD/__input__/file1.input.json' },
+      metaData: {
+        createdBy: 'alice',
+        inputSummary: 'docType=STD',
+        inputDetailsKey: 'p/STD/__input__/file1.input.json',
+      },
     });
 
     const p = controller.getBucketFileList(req, res);
@@ -91,6 +95,30 @@ describe('MinioController', () => {
     expect(result[0].createdBy).toBe('alice');
     expect(result[0].inputSummary).toBe('docType=STD');
     expect(result[0].inputDetailsKey).toBe('p/STD/__input__/file1.input.json');
+  });
+
+  test('getBucketFileList: decodes encoded metadata values to original unicode content', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'p/STD/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({
+      metaData: {
+        createdby: "utf8''%D7%99%D7%A9%D7%A8%D7%90%D7%9C%20%D7%9B%D7%94%D7%9F",
+        inputsummary: "utf8''Report%20-%20%D7%A9%D7%91%D7%95%D7%A2%D7%99%20-%20%F0%9F%98%80",
+        inputdetailskey: "utf8''__input__%2F%D7%93%D7%95%D7%97.input.json",
+      },
+    });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].createdBy).toBe('ישראל כהן');
+    expect(result[0].inputSummary).toBe('Report - שבועי - 😀');
+    expect(result[0].inputDetailsKey).toBe('__input__/דוח.input.json');
   });
 
   test('getBucketFileList: reads x-amz-meta-* keys for backwards compatibility', async () => {
@@ -126,7 +154,9 @@ describe('MinioController', () => {
       { name: 'p/STD/file1.dotx', etag: '123' },
     ]);
     mockS3.listObjectsV2.mockReturnValueOnce(stream);
-    mockS3.statObject.mockResolvedValueOnce({ metaData: { createdBy: 'alice', inputSummary: 'docType=STD' } });
+    mockS3.statObject.mockResolvedValueOnce({
+      metaData: { createdBy: 'alice', inputSummary: 'docType=STD' },
+    });
 
     const p = controller.getBucketFileList(req, res);
     stream.emitAll();
@@ -143,7 +173,9 @@ describe('MinioController', () => {
 
     const stream = makeStream([{ prefix: 'p/STD/' }, { name: 'p/STD/file1.dotx', etag: '123' }]);
     mockS3.listObjectsV2.mockReturnValueOnce(stream);
-    mockS3.statObject.mockResolvedValueOnce({ metaData: { createdBy: 'alice', inputSummary: 'docType=STD' } });
+    mockS3.statObject.mockResolvedValueOnce({
+      metaData: { createdBy: 'alice', inputSummary: 'docType=STD' },
+    });
 
     const p = controller.getBucketFileList(req, res);
     stream.emitAll();
@@ -236,7 +268,7 @@ describe('MinioController', () => {
     mockS3.bucketExists.mockResolvedValueOnce(true);
     mockS3.putObject.mockImplementation(
       (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
-      cb(null, { etag: 'etag-1' })
+        cb(null, { etag: 'etag-1' }),
     );
 
     const req: any = {
@@ -251,6 +283,70 @@ describe('MinioController', () => {
     const res = await controller.uploadFile(req, {} as any);
     expect(res).toEqual({ fileItem: expect.any(Object) });
     expect(fs.unlinkSync).toHaveBeenCalled();
+  });
+
+  test('uploadFile: encodes non-ASCII metadata and strips newline characters', async () => {
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+    let receivedMetadata: Record<string, string> = {};
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, meta: Record<string, string>, cb: Function) => {
+        receivedMetadata = meta;
+        cb(null, { etag: 'etag-encoded' });
+      },
+    );
+
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'p',
+        docType: 'STD',
+        isExternalUrl: false,
+        createdBy: 'ישראל כהן\n',
+        createdById: 'מזהה-😀',
+      },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).resolves.toEqual({ fileItem: expect.any(Object) });
+    expect(receivedMetadata.createdBy.startsWith("utf8''")).toBe(true);
+    expect(receivedMetadata.createdById.startsWith("utf8''")).toBe(true);
+    expect(receivedMetadata.createdBy).not.toContain('\n');
+    expect(receivedMetadata.createdBy).not.toContain('\r');
+  });
+
+  test('downloadFile: sets RFC 6266 content-disposition for non-ASCII filename', async () => {
+    const req: any = { params: { bucketName: 'b', objectName: 'proj/%D7%93%D7%95%D7%97-%F0%9F%98%80.docx' } };
+    const handlers: any = { end: () => {}, error: () => {} };
+    const dataStream: any = {
+      on: (evt: string, fn: any) => {
+        handlers[evt] = fn;
+      },
+      pipe: jest.fn(),
+    };
+    mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => cb(null, dataStream));
+
+    const res: any = {
+      status: jest.fn(() => res),
+      setHeader: jest.fn(),
+    };
+
+    const p = controller.downloadFile(req, res);
+    handlers.end();
+    await p;
+
+    const contentDispositionCall = res.setHeader.mock.calls.find(
+      (call: any[]) => call[0] === 'Content-Disposition',
+    );
+    expect(contentDispositionCall).toBeTruthy();
+    expect(contentDispositionCall[1]).toContain("filename*=UTF-8''");
+    expect(contentDispositionCall[1]).toContain('%D7%93%D7%95%D7%97-%F0%9F%98%80.docx');
+    expect(contentDispositionCall[1]).toContain('filename="');
+    expect(contentDispositionCall[1]).not.toContain('\n');
+    expect(contentDispositionCall[1]).not.toContain('\r');
   });
 
   test('deleteFile: throws when project is shared', async () => {
@@ -368,7 +464,7 @@ describe('MinioController', () => {
     mockS3.makeBucket.mockResolvedValueOnce(undefined);
     mockS3.putObject.mockImplementation(
       (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
-      cb(null, { etag: 'etag-2' })
+        cb(null, { etag: 'etag-2' }),
     );
 
     const req: any = {
@@ -391,7 +487,7 @@ describe('MinioController', () => {
     const uploadError = new Error('upload failed');
     mockS3.putObject.mockImplementation(
       (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
-      cb(uploadError)
+        cb(uploadError),
     );
 
     const req: any = {
@@ -494,7 +590,7 @@ describe('MinioController', () => {
     mockS3.setBucketLifecycle.mockResolvedValueOnce(undefined);
     mockS3.putObject.mockImplementation(
       (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
-      cb(null, { etag: 'mewp-etag-1' })
+        cb(null, { etag: 'mewp-etag-1' }),
     );
 
     const req: any = {
@@ -523,7 +619,7 @@ describe('MinioController', () => {
             Filter: { Prefix: 'MEWP/mewp-external-ingestion/' },
           }),
         ],
-      })
+      }),
     );
     expect(mockS3.putObject).toHaveBeenCalledWith(
       'mewp-external-ingestion',
@@ -531,7 +627,7 @@ describe('MinioController', () => {
       expect.anything(),
       expect.any(Number),
       expect.any(Object),
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(result.fileItem.sourceType).toBe('mewpExternalIngestion');
     expect(result.fileItem.bucketName).toBe('mewp-external-ingestion');
@@ -545,7 +641,7 @@ describe('MinioController', () => {
     mockS3.setBucketLifecycle.mockResolvedValueOnce(undefined);
     mockS3.putObject.mockImplementation(
       (_b: string, _o: string, _s: any, _len: number, _meta: Record<string, string>, cb: Function) =>
-      cb(null, { etag: 'mewp-etag-2' })
+        cb(null, { etag: 'mewp-etag-2' }),
     );
 
     const req: any = {
@@ -574,7 +670,7 @@ describe('MinioController', () => {
             Filter: { Prefix: 'MEWP/mewp-external-ingestion/' },
           }),
         ],
-      })
+      }),
     );
     expect(result.fileItem.bucketName).toBe('my-mewp-bucket');
     expect(result.fileItem.objectName).toBe('MEWP/mewp-external-ingestion/l3l4/links.xlsx');
@@ -597,7 +693,7 @@ describe('MinioController', () => {
     const stream = makeStream([{ name: 'p/file1.dotx', etag: '123' }]);
     mockS3.listObjectsV2.mockReturnValueOnce(stream);
     mockS3.removeObject.mockImplementation((_b: string, _k: string, cb: Function) =>
-      cb(new Error('rm-fail'))
+      cb(new Error('rm-fail')),
     );
 
     const p = controller.deleteFile(req, {} as any);
@@ -622,7 +718,7 @@ describe('MinioController', () => {
     });
 
     await expect(controller.getJSONContentFromFile(req, {} as any)).rejects.toContain(
-      'error due to NoSuchKey'
+      'error due to NoSuchKey',
     );
   });
 
@@ -707,7 +803,7 @@ describe('MinioController', () => {
     expect(mockS3.listObjectsV2).toHaveBeenCalledWith(
       'mewp-external-ingestion',
       'MEWP/mewp-external-ingestion/bugs',
-      true
+      true,
     );
     expect(result.length).toBe(1);
     expect(result[0].name).toBe('MEWP/mewp-external-ingestion/bugs/bugs.csv');
