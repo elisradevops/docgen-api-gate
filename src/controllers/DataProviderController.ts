@@ -34,11 +34,50 @@ export class DataProviderController {
       res.status(200).json(data);
     } catch (err: any) {
       const status = err?.response?.status || 500;
+      const upstreamData = err?.response?.data;
+      const upstreamMessage =
+        typeof upstreamData === 'string'
+          ? upstreamData
+          : typeof upstreamData?.message === 'string'
+          ? upstreamData.message
+          : '';
       res.status(status).json({
-        message: `Upstream error calling ${path}`,
-        error: err?.response?.data || err?.message || String(err),
+        message: upstreamMessage || `Upstream error calling ${path}`,
+        upstreamPath: path,
+        error: upstreamData || err?.message || String(err),
       });
     }
+  }
+
+  private toValidTimestamp(value: string): number | null {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    const ts = Date.parse(raw);
+    if (!Number.isFinite(ts)) return null;
+    return ts;
+  }
+
+  private validateCompareRange(
+    baselineValue: string,
+    compareToValue: string,
+    baselineLabel: string,
+    compareToLabel: string,
+  ): string | null {
+    const baselineTs = this.toValidTimestamp(baselineValue);
+    if (baselineTs == null) return `${baselineLabel} must be a valid date-time`;
+
+    const compareToTs = this.toValidTimestamp(compareToValue);
+    if (compareToTs == null) return `${compareToLabel} must be a valid date-time`;
+
+    if (baselineTs === compareToTs) {
+      return `${baselineLabel} and ${compareToLabel} must be different`;
+    }
+
+    if (baselineTs > compareToTs) {
+      return `${compareToLabel} must be later than ${baselineLabel}`;
+    }
+
+    return null;
   }
 
   // Management
@@ -106,6 +145,145 @@ export class DataProviderController {
       orgUrl: creds.orgUrl,
       token: creds.token,
       teamProjectId,
+    });
+  }
+
+  public async getHistoricalQueries(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const { teamProjectId = '', path = 'shared' } = req.query as Record<string, string>;
+    await this.forward(res, '/azure/queries/historical', {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId,
+      path,
+    });
+  }
+
+  public async getHistoricalQueryResults(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const { queryId } = req.params;
+    const { teamProjectId = '', asOf = '' } = req.query as Record<string, string>;
+    await this.forward(res, `/azure/queries/${encodeURIComponent(queryId)}/historical-results`, {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId,
+      asOf,
+    });
+  }
+
+  public async compareHistoricalQueryResults(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const queryId = String(req.params?.queryId || '').trim();
+    const { teamProjectId = '', baselineAsOf = '', compareToAsOf = '' } = req.query as Record<string, string>;
+    const normalizedBaseline = String(baselineAsOf || '').trim();
+    const normalizedCompareTo = String(compareToAsOf || '').trim();
+
+    if (!queryId) {
+      res.status(400).json({ message: 'queryId is required' });
+      return;
+    }
+    if (!normalizedBaseline || !normalizedCompareTo) {
+      res.status(400).json({ message: 'baselineAsOf and compareToAsOf are required' });
+      return;
+    }
+    const validationError = this.validateCompareRange(
+      normalizedBaseline,
+      normalizedCompareTo,
+      'baselineAsOf',
+      'compareToAsOf',
+    );
+    if (validationError) {
+      res.status(400).json({ message: validationError });
+      return;
+    }
+
+    await this.forward(res, `/azure/queries/${encodeURIComponent(queryId)}/historical-compare`, {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId,
+      baselineAsOf: normalizedBaseline,
+      compareToAsOf: normalizedCompareTo,
+    });
+  }
+
+  public async getTimeMachineAsOf(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+
+    const {
+      teamProject = '',
+      queryId = '',
+      asOf = '',
+    } = (req.body || {}) as {
+      teamProject?: string;
+      queryId?: string;
+      asOf?: string;
+    };
+    const normalizedTeamProject = String(teamProject || '').trim();
+    const normalizedQueryId = String(queryId || '').trim();
+    const normalizedAsOf = String(asOf || '').trim();
+
+    if (!normalizedTeamProject || !normalizedQueryId || !normalizedAsOf) {
+      res.status(400).json({
+        message: 'teamProject, queryId, and asOf are required',
+      });
+      return;
+    }
+
+    await this.forward(res, `/azure/queries/${encodeURIComponent(normalizedQueryId)}/historical-results`, {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId: normalizedTeamProject,
+      asOf: normalizedAsOf,
+    });
+  }
+
+  public async compareTimeMachine(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+
+    const {
+      teamProject = '',
+      queryId = '',
+      baselineTimestamp = '',
+      compareToTimestamp = '',
+    } = (req.body || {}) as {
+      teamProject?: string;
+      queryId?: string;
+      baselineTimestamp?: string;
+      compareToTimestamp?: string;
+    };
+    const normalizedTeamProject = String(teamProject || '').trim();
+    const normalizedQueryId = String(queryId || '').trim();
+    const normalizedBaseline = String(baselineTimestamp || '').trim();
+    const normalizedCompareTo = String(compareToTimestamp || '').trim();
+
+    if (!normalizedTeamProject || !normalizedQueryId || !normalizedBaseline || !normalizedCompareTo) {
+      res.status(400).json({
+        message: 'teamProject, queryId, baselineTimestamp, and compareToTimestamp are required',
+      });
+      return;
+    }
+    const validationError = this.validateCompareRange(
+      normalizedBaseline,
+      normalizedCompareTo,
+      'baselineTimestamp',
+      'compareToTimestamp',
+    );
+    if (validationError) {
+      res.status(400).json({ message: validationError });
+      return;
+    }
+
+    await this.forward(res, `/azure/queries/${encodeURIComponent(normalizedQueryId)}/historical-compare`, {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId: normalizedTeamProject,
+      baselineAsOf: normalizedBaseline,
+      compareToAsOf: normalizedCompareTo,
     });
   }
 

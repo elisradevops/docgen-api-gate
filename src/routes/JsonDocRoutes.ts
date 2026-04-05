@@ -605,11 +605,30 @@ export class Routes {
       .route('/azure/queries')
       .get((req: Request, res: Response) => this.dataProviderController.getSharedQueries(req, res));
     app
+      .route('/azure/queries/historical')
+      .get((req: Request, res: Response) => this.dataProviderController.getHistoricalQueries(req, res));
+    app
       .route('/azure/fields')
       .get((req: Request, res: Response) => this.dataProviderController.getFieldsByType(req, res));
     app
       .route('/azure/queries/:queryId/results')
       .get((req: Request, res: Response) => this.dataProviderController.getQueryResults(req, res));
+    app
+      .route('/azure/queries/:queryId/historical-results')
+      .get((req: Request, res: Response) =>
+        this.dataProviderController.getHistoricalQueryResults(req, res),
+      );
+    app
+      .route('/azure/queries/:queryId/historical-compare')
+      .get((req: Request, res: Response) =>
+        this.dataProviderController.compareHistoricalQueryResults(req, res),
+      );
+    app
+      .route('/time-machine/as-of')
+      .post((req: Request, res: Response) => this.dataProviderController.getTimeMachineAsOf(req, res));
+    app
+      .route('/time-machine/compare')
+      .post((req: Request, res: Response) => this.dataProviderController.compareTimeMachine(req, res));
 
     app
       .route('/azure/tests/plans')

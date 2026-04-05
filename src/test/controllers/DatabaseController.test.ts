@@ -133,6 +133,34 @@ describe('DatabaseController', () => {
     expect(res.body).toEqual({ favorites: [{ id: '1' }] });
   });
 
+  test('getFavorites: supports historical-query-dates docType', async () => {
+    const req: any = {
+      query: { userId: 'u1', docType: 'historical-query-dates', teamProjectId: 'tp' },
+    };
+    const res = buildRes();
+    const Favorite = mongooseMod._FavoriteCtor;
+    Favorite.find.mockResolvedValueOnce([{ id: 'hist-1', docType: 'historical-query-dates' }]);
+
+    await controller.getFavorites(req, res);
+
+    expect(Favorite.find).toHaveBeenCalledWith({
+      $or: [
+        {
+          userId: 'u1',
+          docType: 'historical-query-dates',
+          teamProjectId: 'tp',
+        },
+        {
+          isShared: true,
+          docType: 'historical-query-dates',
+          teamProjectId: 'tp',
+        },
+      ],
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.body).toEqual({ favorites: [{ id: 'hist-1', docType: 'historical-query-dates' }] });
+  });
+
   /**
    * deleteFavorite (missing id)
    * Returns 400 when the id path parameter is missing.
