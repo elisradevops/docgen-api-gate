@@ -5,6 +5,7 @@ import https from 'https';
 
 export class DataProviderController {
   private ccClient: AxiosInstance;
+  private historicalTimeoutMs: number;
 
   constructor() {
     const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 200, keepAliveMsecs: 10000 });
@@ -16,6 +17,9 @@ export class DataProviderController {
       httpsAgent,
       timeout: 20000,
     });
+
+    const envMs = parseInt(process.env.CC_HISTORICAL_TIMEOUT_MS || '', 10);
+    this.historicalTimeoutMs = Number.isFinite(envMs) && envMs > 0 ? envMs : 120000;
   }
 
   private getCreds(req: Request, res: Response): { orgUrl: string; token: string } | null {
@@ -28,9 +32,10 @@ export class DataProviderController {
     return { orgUrl, token };
   }
 
-  private async forward(res: Response, path: string, payload: any) {
+  private async forward(res: Response, path: string, payload: any, opts?: { timeout?: number }) {
     try {
-      const { data } = await this.ccClient.post(path, payload);
+      const config = opts?.timeout != null ? { timeout: opts.timeout } : undefined;
+      const { data } = config ? await this.ccClient.post(path, payload, config) : await this.ccClient.post(path, payload);
       res.status(200).json(data);
     } catch (err: any) {
       const status = err?.response?.status || 500;
@@ -170,7 +175,7 @@ export class DataProviderController {
       token: creds.token,
       teamProjectId,
       asOf,
-    });
+    }, { timeout: this.historicalTimeoutMs });
   }
 
   public async compareHistoricalQueryResults(req: Request, res: Response) {
@@ -206,7 +211,7 @@ export class DataProviderController {
       teamProjectId,
       baselineAsOf: normalizedBaseline,
       compareToAsOf: normalizedCompareTo,
-    });
+    }, { timeout: this.historicalTimeoutMs });
   }
 
   public async getTimeMachineAsOf(req: Request, res: Response) {
@@ -238,7 +243,7 @@ export class DataProviderController {
       token: creds.token,
       teamProjectId: normalizedTeamProject,
       asOf: normalizedAsOf,
-    });
+    }, { timeout: this.historicalTimeoutMs });
   }
 
   public async compareTimeMachine(req: Request, res: Response) {
@@ -284,7 +289,7 @@ export class DataProviderController {
       teamProjectId: normalizedTeamProject,
       baselineAsOf: normalizedBaseline,
       compareToAsOf: normalizedCompareTo,
-    });
+    }, { timeout: this.historicalTimeoutMs });
   }
 
   // Tests
