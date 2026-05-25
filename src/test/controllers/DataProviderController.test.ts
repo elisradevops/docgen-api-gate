@@ -120,6 +120,7 @@ describe('DataProviderController', () => {
       req: any;
       path: string;
       payload: any;
+      config?: Record<string, unknown>;
     }> = [
       {
         name: 'getTeamProjects',
@@ -185,6 +186,7 @@ describe('DataProviderController', () => {
           teamProjectId: 'tp',
           asOf: '2026-01-01T10:00:00.000Z',
         },
+        config: { timeout: 120000 },
       },
       {
         name: 'compareHistoricalQueryResults',
@@ -206,6 +208,7 @@ describe('DataProviderController', () => {
           baselineAsOf: '2025-12-22T17:08:00.000Z',
           compareToAsOf: '2025-12-28T08:57:00.000Z',
         },
+        config: { timeout: 120000 },
       },
       {
         name: 'getTimeMachineAsOf',
@@ -225,6 +228,7 @@ describe('DataProviderController', () => {
           teamProjectId: 'tp',
           asOf: '2026-01-01T10:00:00.000Z',
         },
+        config: { timeout: 120000 },
       },
       {
         name: 'compareTimeMachine',
@@ -246,6 +250,7 @@ describe('DataProviderController', () => {
           baselineAsOf: '2025-12-22T17:08:00.000Z',
           compareToAsOf: '2025-12-28T08:57:00.000Z',
         },
+        config: { timeout: 120000 },
       },
       {
         name: 'getTestPlansList',
@@ -337,11 +342,15 @@ describe('DataProviderController', () => {
       },
     ];
 
-    test.each(cases)('%s forwards with correct path and payload', async ({ call, req, path, payload }) => {
+    test.each(cases)('%s forwards with correct path and payload', async ({ call, req, path, payload, config }) => {
       const res = buildRes();
       axiosMod.create().post.mockResolvedValueOnce(ok);
       await call(controller, req, res);
-      expect(axiosMod.create().post).toHaveBeenCalledWith(path, payload);
+      if (config) {
+        expect(axiosMod.create().post).toHaveBeenCalledWith(path, payload, config);
+      } else {
+        expect(axiosMod.create().post).toHaveBeenCalledWith(path, payload);
+      }
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body).toEqual(ok.data);
     });

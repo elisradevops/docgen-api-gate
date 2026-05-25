@@ -214,7 +214,7 @@ describe('DataProviderController HTTP integration', () => {
       teamProjectId: 'tp1',
       baselineAsOf: '2025-12-22T17:08:00.000Z',
       compareToAsOf: '2025-12-28T08:57:00.000Z',
-    });
+    }, { timeout: 120000 });
   });
 
   test('GET /azure/queries/:queryId/historical-compare returns 400 when compare range is invalid', async () => {
@@ -267,7 +267,7 @@ describe('DataProviderController HTTP integration', () => {
       token: 'pat',
       teamProjectId: 'tp1',
       asOf: '2026-03-29T13:17:00.000Z',
-    });
+    }, { timeout: 120000 });
   });
 
   test('POST /time-machine/compare maps contract payload to legacy historical-compare upstream call', async () => {
@@ -297,7 +297,7 @@ describe('DataProviderController HTTP integration', () => {
       teamProjectId: 'tp1',
       baselineAsOf: '2025-12-22T17:08:00.000Z',
       compareToAsOf: '2025-12-28T08:57:00.000Z',
-    });
+    }, { timeout: 120000 });
   });
 
   test('POST /time-machine/compare returns 400 when timestamps are invalid', async () => {
