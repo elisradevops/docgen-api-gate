@@ -35,75 +35,7 @@ export class DocumentsGeneratorController {
           const docTemplate = docTemplateResponse.data;
           docTemplate.uploadProperties = documentRequest.uploadProperties;
           const contentControls = await jsonDocumentGenerator.generateContentControls(documentRequest);
-
-          // Extract resolved range metadata and dynamically rename SVD file
-          const flatControls: any[] = [];
-          if (Array.isArray(contentControls)) {
-            contentControls.forEach((item) => {
-              if (Array.isArray(item)) {
-                flatControls.push(...item);
-              } else if (item) {
-                flatControls.push(item);
-              }
-            });
-          }
-
-          const metadataControl = flatControls.find((c: any) => c && c.title === 'resolved-range-metadata');
-          if (metadataControl && metadataControl.wordObjects && docTemplate.uploadProperties?.fileName) {
-            const resolvedFrom = metadataControl.wordObjects.find((w: any) => w.name === 'resolvedFrom')?.value;
-            const resolvedTo = metadataControl.wordObjects.find((w: any) => w.name === 'resolvedTo')?.value;
-
-            if (resolvedFrom && resolvedTo) {
-              const originalFileName = docTemplate.uploadProperties.fileName;
-              const timestampRegex = /(-\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2})$/;
-              const timestampMatch = originalFileName.match(timestampRegex);
-              const timestamp = timestampMatch ? timestampMatch[1] : '';
-
-              const cleanVal = (val: string) => val.trim().replace(/\./g, '-').replace(/[\s:_]+/g, '_');
-              const cleanFrom = cleanVal(resolvedFrom);
-              const cleanTo = cleanVal(resolvedTo);
-
-              const isRelease = originalFileName.toLowerCase().includes('-release-');
-              const isPipeline = originalFileName.toLowerCase().includes('-pipeline-');
-              const projectName = documentRequest.teamProjectName;
-
-              const changeTableCtrl: any = documentRequest.contentControls.find((c: any) => c.type === 'change-description-table');
-
-              if (isRelease && changeTableCtrl?.data?.selectedRelease) {
-                const selectedRelease = changeTableCtrl.data.selectedRelease;
-                const cleanDefText = selectedRelease.text.trim().replace(/\./g, '-').replace(/\s+/g, '_');
-                docTemplate.uploadProperties.fileName = `${projectName}-SVD-release-${cleanDefText}-${cleanTo}${timestamp}`;
-              } else if (isPipeline && changeTableCtrl?.data?.selectedPipeline) {
-                const selectedPipeline = changeTableCtrl.data.selectedPipeline;
-                const pipelineText = selectedPipeline.text;
-                const pipelineName = pipelineText.includes(' - ') ? pipelineText.split(' - ')[1] : pipelineText;
-                const cleanPipelineName = pipelineName.trim().replace(/\./g, '-').replace(/\s+/g, '_');
-                docTemplate.uploadProperties.fileName = `${projectName}-SVD-pipeline-${cleanPipelineName}${timestamp}`;
-              } else {
-                const prefix = timestamp ? originalFileName.slice(0, -timestamp.length) : originalFileName;
-                docTemplate.uploadProperties.fileName = `${prefix}-${cleanFrom}-to-${cleanTo}${timestamp}`;
-              }
-              logger.info(`SVD Filename dynamically updated from ${originalFileName} to ${docTemplate.uploadProperties.fileName}`);
-            }
-          }
-
-          // Filter out the resolved-range-metadata control so it is not sent to downstream word/excel rendering
-          let sanitizedDataList = contentControls;
-          if (Array.isArray(sanitizedDataList)) {
-            sanitizedDataList = sanitizedDataList.map((item: any) => {
-              if (Array.isArray(item)) {
-                return item.filter((c: any) => c && c.title !== 'resolved-range-metadata');
-              }
-              return item;
-            }).filter((item: any) => {
-              if (Array.isArray(item)) {
-                return item.length > 0;
-              }
-              return item && item.title !== 'resolved-range-metadata';
-            });
-          }
-
-          docTemplate.JsonDataList = sanitizedDataList;
+          docTemplate.JsonDataList = contentControls;
           docTemplate.minioAttachmentData = [];
           contentControls.forEach((contentControl) => {
             if (contentControl.minioAttachmentData) {
@@ -114,6 +46,20 @@ export class DocumentsGeneratorController {
           });
           docTemplate.formattingSettings = documentRequest.formattingSettings;
 
+          const resolvedCtx = (contentControls as any[])
+            .map((c) => c?.resolvedContextName)
+            .find((n) => !!n);
+          const hasAutoDiscoveredRange = (documentRequest.contentControls || []).some((cc) => {
+            const data = (cc as any).data || {};
+            return (data.rangeType === 'release' || data.rangeType === 'pipeline') &&
+              (!data.to || String(data.to).trim() === '');
+          });
+          if (hasAutoDiscoveredRange && resolvedCtx) {
+            const date = this.getFormattedDate();
+            documentRequest.uploadProperties.fileName = `${documentRequest.teamProjectName}-svd-${resolvedCtx}-${date}`;
+          } else if (!documentRequest.uploadProperties.fileName) {
+            documentRequest.uploadProperties.fileName = `${documentRequest.teamProjectName}-svd-${this.getFormattedDate()}`;
+          }
           const isExcelSpreadsheet = contentControls.some((contentControl) => contentControl.isExcelSpreadsheet);
           const isMewpStandaloneFlow = this.hasMewpStandaloneReporterControl(documentRequest);
           const isInternalValidationFlow = this.hasInternalValidationReporterControl(documentRequest);
@@ -312,6 +258,12 @@ export class DocumentsGeneratorController {
   private buildInternalValidationFileName(rawBaseName: string): string {
     const timestampSuffix = this.getRequestTimestampSuffix(rawBaseName);
     return `mewp-internal-validation-report${timestampSuffix}.xlsx`;
+  }
+
+  private getFormattedDate(): string {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   }
 
   private getBaseFileName(rawName: string): string {
