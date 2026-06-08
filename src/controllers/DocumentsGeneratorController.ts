@@ -46,14 +46,19 @@ export class DocumentsGeneratorController {
           });
           docTemplate.formattingSettings = documentRequest.formattingSettings;
 
-          if (!documentRequest.uploadProperties.fileName) {
-            const resolvedCtx = (contentControls as any[])
-              .map((c) => c?.resolvedContextName)
-              .find((n) => !!n);
+          const resolvedCtx = (contentControls as any[])
+            .map((c) => c?.resolvedContextName)
+            .find((n) => !!n);
+          const hasAutoDiscoveredRange = (documentRequest.contentControls || []).some((cc) => {
+            const data = (cc as any).data || {};
+            return (data.rangeType === 'release' || data.rangeType === 'pipeline') &&
+              (!data.to || String(data.to).trim() === '');
+          });
+          if (hasAutoDiscoveredRange && resolvedCtx) {
             const date = this.getFormattedDate();
-            documentRequest.uploadProperties.fileName = resolvedCtx
-              ? `${documentRequest.teamProjectName}-svd-${resolvedCtx}-${date}`
-              : `${documentRequest.teamProjectName}-svd-${date}`;
+            documentRequest.uploadProperties.fileName = `${documentRequest.teamProjectName}-svd-${resolvedCtx}-${date}`;
+          } else if (!documentRequest.uploadProperties.fileName) {
+            documentRequest.uploadProperties.fileName = `${documentRequest.teamProjectName}-svd-${this.getFormattedDate()}`;
           }
           const isExcelSpreadsheet = contentControls.some((contentControl) => contentControl.isExcelSpreadsheet);
           const isMewpStandaloneFlow = this.hasMewpStandaloneReporterControl(documentRequest);
