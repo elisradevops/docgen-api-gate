@@ -74,6 +74,121 @@ describe('DocumentsGeneratorController', () => {
     expect(axios.post).toHaveBeenNthCalledWith(2, 'http://jw/api/word/create', expect.any(Object));
   });
 
+  test('reconstructs release filename correctly and filters out metadata control', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc-release' } });
+
+    genMock.generateContentControls.mockResolvedValueOnce([
+      { title: 'required-states-and-modes', data: [] },
+      {
+        title: 'resolved-range-metadata',
+        wordObjects: [
+          { name: 'resolvedFrom', value: 'v1.0.0' },
+          { name: 'resolvedTo', value: 'v2.0.0' }
+        ]
+      }
+    ]);
+
+    const req = makeReq({
+      teamProjectName: 'MyProject',
+      uploadProperties: {
+        bucketName: 'ATTACH_MENTS',
+        fileName: 'MyProject-SVD-release-12-MyDefinition-2026-06-08-09:19:32'
+      },
+      contentControls: [
+        {
+          type: 'change-description-table',
+          title: 'required-states-and-modes',
+          data: {
+            selectedRelease: { key: 12, text: '12 - MyDefinition' }
+          }
+        }
+      ]
+    });
+
+    const res = buildRes();
+    await controller.createJSONDoc(req, res);
+
+    const jwPayload = axios.post.mock.calls[1][1];
+    expect(jwPayload.uploadProperties.fileName).toBe('MyProject-SVD-release-12_-_MyDefinition-v2-0-0-2026-06-08-09:19:32');
+
+    const filteredControls = jwPayload.JsonDataList;
+    const metadataCtrl = filteredControls.flat().find((c: any) => c.title === 'resolved-range-metadata');
+    expect(metadataCtrl).toBeUndefined();
+  });
+
+  test('reconstructs pipeline filename correctly and filters out metadata control', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc-pipeline' } });
+
+    genMock.generateContentControls.mockResolvedValueOnce([
+      { title: 'required-states-and-modes', data: [] },
+      {
+        title: 'resolved-range-metadata',
+        wordObjects: [
+          { name: 'resolvedFrom', value: '101' },
+          { name: 'resolvedTo', value: '102' }
+        ]
+      }
+    ]);
+
+    const req = makeReq({
+      teamProjectName: 'MyProject',
+      uploadProperties: {
+        bucketName: 'ATTACH_MENTS',
+        fileName: 'MyProject-SVD-pipeline-34-MyPipelineDef-2026-06-08-09:19:32'
+      },
+      contentControls: [
+        {
+          type: 'change-description-table',
+          title: 'required-states-and-modes',
+          data: {
+            selectedPipeline: { key: 34, text: '34 - MyPipelineDef' }
+          }
+        }
+      ]
+    });
+
+    const res = buildRes();
+    await controller.createJSONDoc(req, res);
+
+    const jwPayload = axios.post.mock.calls[1][1];
+    expect(jwPayload.uploadProperties.fileName).toBe('MyProject-SVD-pipeline-MyPipelineDef-2026-06-08-09:19:32');
+  });
+
+  test('uses fallback filename reconstruction if not parsed as standard release/pipeline details', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc-fallback' } });
+
+    genMock.generateContentControls.mockResolvedValueOnce([
+      {
+        title: 'resolved-range-metadata',
+        wordObjects: [
+          { name: 'resolvedFrom', value: 'v1.0' },
+          { name: 'resolvedTo', value: 'v2.0' }
+        ]
+      }
+    ]);
+
+    const req = makeReq({
+      teamProjectName: 'MyProject',
+      uploadProperties: {
+        bucketName: 'ATTACH_MENTS',
+        fileName: 'Custom-FileName-2026-06-08-09:19:32'
+      },
+      contentControls: []
+    });
+
+    const res = buildRes();
+    await controller.createJSONDoc(req, res);
+
+    const jwPayload = axios.post.mock.calls[1][1];
+    expect(jwPayload.uploadProperties.fileName).toBe('Custom-FileName-v1-0-to-v2-0-2026-06-08-09:19:32');
+  });
+
   test('supports template-less requests (empty templateFile) for WordService generation', async () => {
     axios.post
       .mockResolvedValueOnce({ data: { templatePath: '' } })
