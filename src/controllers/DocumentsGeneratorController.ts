@@ -46,6 +46,15 @@ export class DocumentsGeneratorController {
           });
           docTemplate.formattingSettings = documentRequest.formattingSettings;
 
+          if (!documentRequest.uploadProperties.fileName) {
+            const resolvedCtx = (contentControls as any[])
+              .map((c) => c?.resolvedContextName)
+              .find((n) => !!n);
+            const date = this.getFormattedDate();
+            documentRequest.uploadProperties.fileName = resolvedCtx
+              ? `${documentRequest.teamProjectName}-svd-${resolvedCtx}-${date}`
+              : `${documentRequest.teamProjectName}-svd-${date}`;
+          }
           const isExcelSpreadsheet = contentControls.some((contentControl) => contentControl.isExcelSpreadsheet);
           const isMewpStandaloneFlow = this.hasMewpStandaloneReporterControl(documentRequest);
           const isInternalValidationFlow = this.hasInternalValidationReporterControl(documentRequest);
@@ -244,6 +253,12 @@ export class DocumentsGeneratorController {
   private buildInternalValidationFileName(rawBaseName: string): string {
     const timestampSuffix = this.getRequestTimestampSuffix(rawBaseName);
     return `mewp-internal-validation-report${timestampSuffix}.xlsx`;
+  }
+
+  private getFormattedDate(): string {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
   }
 
   private getBaseFileName(rawName: string): string {
