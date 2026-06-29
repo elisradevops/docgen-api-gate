@@ -52,8 +52,9 @@ export class DatabaseController {
         : await Favorite.findOne({ docType, teamProjectId, name });
 
       if (favorite) {
-        // Update existing favorite
-        favorite.dataToSave = dataToSave;
+        // Update existing favorite — serialize to JSON string to avoid MongoDB dot-in-key restriction
+        favorite.dataToSave = JSON.stringify(dataToSave);
+        favorite.markModified('dataToSave');
         await favorite.save();
 
         finishSpanWithResult(span, 200);
@@ -68,7 +69,7 @@ export class DatabaseController {
           userId,
           name,
           docType,
-          dataToSave,
+          dataToSave: JSON.stringify(dataToSave),
           teamProjectId,
           isShared,
         });
@@ -120,8 +121,16 @@ export class DatabaseController {
         ],
       });
 
+      const parsed = favorites.map((f) => {
+        const obj = f.toObject();
+        if (typeof obj.dataToSave === 'string') {
+          try { obj.dataToSave = JSON.parse(obj.dataToSave); } catch { /* leave as-is */ }
+        }
+        return obj;
+      });
+
       finishSpanWithResult(span, 200);
-      res.status(200).json({ favorites });
+      res.status(200).json({ favorites: parsed });
     } catch (error) {
       logger.error(`Failed to fetch favorites: ${error.message}`);
       finishSpanWithResult(span, 500, true);

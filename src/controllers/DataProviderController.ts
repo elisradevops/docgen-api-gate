@@ -214,6 +214,23 @@ export class DataProviderController {
     }, { timeout: this.historicalTimeoutMs });
   }
 
+  public async getTraceColumns(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const { reqTestQuery, testReqQuery, teamProject = '' } = (req.body || {}) as {
+      reqTestQuery?: any;
+      testReqQuery?: any;
+      teamProject?: string;
+    };
+    await this.forward(res, '/azure/trace/columns', {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      reqTestQuery,
+      testReqQuery,
+      teamProject,
+    });
+  }
+
   public async getTimeMachineAsOf(req: Request, res: Response) {
     const creds = this.getCreds(req, res);
     if (!creds) return;
