@@ -624,6 +624,9 @@ export class Routes {
         this.dataProviderController.compareHistoricalQueryResults(req, res),
       );
     app
+      .route('/azure/trace/columns')
+      .post((req: Request, res: Response) => this.dataProviderController.getTraceColumns(req, res));
+    app
       .route('/time-machine/as-of')
       .post((req: Request, res: Response) => this.dataProviderController.getTimeMachineAsOf(req, res));
     app

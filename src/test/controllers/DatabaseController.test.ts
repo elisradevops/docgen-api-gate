@@ -6,6 +6,8 @@ jest.mock('mongoose', () => {
   const FavoriteCtor: any = function (this: any, doc: any) {
     Object.assign(this, doc);
     this.save = jest.fn().mockResolvedValue(this);
+    this.markModified = jest.fn();
+    this.toObject = jest.fn(() => ({ ...doc }));
   };
   FavoriteCtor.findOne = findOne;
   FavoriteCtor.find = find;
@@ -125,7 +127,8 @@ describe('DatabaseController', () => {
     const req: any = { query: { userId: 'u1', docType: 'STD', teamProjectId: 'tp' } };
     const res = buildRes();
     const Favorite = mongooseMod._FavoriteCtor;
-    Favorite.find.mockResolvedValueOnce([{ id: '1' }]);
+    const item = { id: '1' };
+    Favorite.find.mockResolvedValueOnce([{ ...item, toObject: () => item }]);
 
     await controller.getFavorites(req, res);
 
@@ -139,7 +142,8 @@ describe('DatabaseController', () => {
     };
     const res = buildRes();
     const Favorite = mongooseMod._FavoriteCtor;
-    Favorite.find.mockResolvedValueOnce([{ id: 'hist-1', docType: 'historical-query-dates' }]);
+    const histItem = { id: 'hist-1', docType: 'historical-query-dates' };
+    Favorite.find.mockResolvedValueOnce([{ ...histItem, toObject: () => histItem }]);
 
     await controller.getFavorites(req, res);
 
