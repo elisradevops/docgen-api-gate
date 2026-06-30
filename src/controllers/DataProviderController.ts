@@ -153,6 +153,18 @@ export class DataProviderController {
     });
   }
 
+  public async getQueryDefinition(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const { queryId } = req.params;
+    const { teamProjectId = '' } = req.query as Record<string, string>;
+    await this.forward(res, `/azure/queries/${encodeURIComponent(queryId)}/definition`, {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      teamProjectId,
+    });
+  }
+
   public async getHistoricalQueries(req: Request, res: Response) {
     const creds = this.getCreds(req, res);
     if (!creds) return;
