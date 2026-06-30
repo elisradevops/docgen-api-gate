@@ -614,6 +614,9 @@ export class Routes {
       .route('/azure/queries/:queryId/results')
       .get((req: Request, res: Response) => this.dataProviderController.getQueryResults(req, res));
     app
+      .route('/azure/queries/:queryId/definition')
+      .get((req: Request, res: Response) => this.dataProviderController.getQueryDefinition(req, res));
+    app
       .route('/azure/queries/:queryId/historical-results')
       .get((req: Request, res: Response) =>
         this.dataProviderController.getHistoricalQueryResults(req, res),
