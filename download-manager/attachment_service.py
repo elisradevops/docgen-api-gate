@@ -54,13 +54,30 @@ class AttachmentService:
         self.ext = ext
         self.project_name = project_name
         self.token = token
-        self.authorization = str(base64.b64encode(bytes(':' + self.token, 'ascii')), 'ascii')
-        self.headers = {
-          'Authorization': 'Basic '+self.authorization
-        }
+        self.headers = self._build_auth_headers(token)
         self.image_extensions = [".jpg", ".jpeg", ".png", ".ico", ".im", ".pcx", ".tga", ".tiff"]
         self.is_base64 = is_base64
         self.base64_chunks = base64_chunks
+
+    def _build_auth_headers(self, token):
+        token = str(token or '').strip()
+        lower_token = token.lower()
+        if lower_token.startswith('bearer:'):
+            return {
+                'Authorization': 'Bearer ' + token.split(':', 1)[1].strip()
+            }
+        if lower_token.startswith('bearer '):
+            return {
+                'Authorization': 'Bearer ' + token.split(' ', 1)[1].strip()
+            }
+        if re.match(r'^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$', token):
+            return {
+                'Authorization': 'Bearer ' + token
+            }
+        authorization = str(base64.b64encode(bytes(':' + token, 'ascii')), 'ascii')
+        return {
+          'Authorization': 'Basic ' + authorization
+        }
 
     def _process_base64_chunks(self, file_name):
         """Reassemble and save base64 chunks to file"""
@@ -106,6 +123,7 @@ class AttachmentService:
                         self.url + "?download=true",
                         headers=self.headers
                     )
+                    azure_response.raise_for_status()
                     with open(file_name, 'wb') as f:
                         f.write(azure_response.content)
 
@@ -177,4 +195,3 @@ class AttachmentService:
             "attachmentPath": full_download_path,
             "fileName": file_name
         }
-
