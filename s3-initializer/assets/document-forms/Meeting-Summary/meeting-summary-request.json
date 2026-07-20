@@ -1,0 +1,33 @@
+{
+  "documentTitle": "Meeting-Summary-document",
+  "templateFiles": ["Meeting-Summary"],
+  "contentControls": [
+    {
+      "type": "query",
+      "title": "meeting-summary-content-control",
+      "skin": "paragraph",
+      "data": {
+        "type": "query"
+      }
+    },
+    {
+      "type": "query",
+      "title": "meeting-tasks-content-control",
+      "skin": "table",
+      "data": {
+        "type": "query"
+      }
+    },
+    {
+      "type": "query",
+      "title": "previous-open-tasks-content-control",
+      "skin": "table",
+      "optional": true,
+      "data": {
+        "type": "query"
+      }
+    }
+  ],
+  "tabIndex": 6,
+  "isDebug": true
+}

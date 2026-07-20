@@ -232,6 +232,38 @@ describe('SharePointController', () => {
       ]);
     });
 
+    test('accepts Meeting-Summary as a valid docType (not invalid)', async () => {
+      const files = [
+        { name: 'Meeting-Summary/meeting-summary-portrait.dotx', length: 14, docType: 'Meeting-Summary' },
+      ];
+      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockGetMinioFiles.mockResolvedValueOnce([]);
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.invalidFiles.length).toBe(0);
+      expect(res.body.newFiles).toEqual([
+        expect.objectContaining({
+          name: 'Meeting-Summary/meeting-summary-portrait.dotx',
+          docType: 'Meeting-Summary',
+        }),
+      ]);
+    });
+
     test('skips identical files without conflicts or new files', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD' }];
       mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
@@ -385,6 +417,39 @@ describe('SharePointController', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.syncedFiles).toContain('SYSRS/sysrs-template.dotx');
+      expect(res.body.failedFiles).toEqual([]);
+    });
+
+    test('uploads Meeting-Summary files without docType validation failure', async () => {
+      const files = [
+        {
+          name: 'Meeting-Summary/meeting-summary-landscape.docx',
+          length: 21,
+          docType: 'Meeting-Summary',
+          serverRelativeUrl: '/meeting-summary',
+        },
+      ];
+      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockGetMinioFiles.mockResolvedValueOnce([]);
+      mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('meeting-summary'));
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.syncedFiles).toContain('Meeting-Summary/meeting-summary-landscape.docx');
       expect(res.body.failedFiles).toEqual([]);
     });
 

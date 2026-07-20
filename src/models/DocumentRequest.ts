@@ -29,6 +29,7 @@ export interface ContentControl {
   headingLevel: number;
   data: DataDescriptor;
   isExcelSpreadsheet: boolean;
+  forceClean?: boolean;
 }
 export interface FormattingSettings {
   trimAdditionalSpacingInDescriptions: boolean;

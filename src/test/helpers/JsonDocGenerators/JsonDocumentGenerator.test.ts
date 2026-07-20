@@ -58,6 +58,7 @@ describe('JSONDocumentGenerator', () => {
           headingLevel: 2,
           data: { type: 'query', queryId: 'q2' },
           isExcelSpreadsheet: false,
+          forceClean: true,
         },
       ],
       vcrmQueryId: 'vcrm-1',
@@ -78,7 +79,10 @@ describe('JSONDocumentGenerator', () => {
 
     const result = await generator.generateContentControls(baseRequest);
 
-    expect(result).toEqual([{ result: 'r1' }, { result: 'r2' }]);
+    expect(result).toEqual([
+      { result: 'r1', forceClean: false },
+      { result: 'r2', forceClean: true },
+    ]);
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
 
     expect(mockedAxios.post).toHaveBeenCalledWith(
@@ -105,6 +109,7 @@ describe('JSONDocumentGenerator', () => {
         headingLevel: 2,
         data: { type: 'query', queryId: 'q2' },
         isExcelSpreadsheet: false,
+        forceClean: true,
       })
     );
 
@@ -125,5 +130,43 @@ describe('JSONDocumentGenerator', () => {
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`Error adding content control ${baseRequest.contentControls[0].title}`)
     );
+  });
+
+  test('generateContentControls forwards "empty"-type controls through the same upstream call as every other type', async () => {
+    // 'empty'-type controls (e.g. Meeting-Summary's unselected optional section) must still get a
+    // real {jsonPath, jsonName} MinIO pointer from content-control — json-to-word's JsonDataList
+    // processing requires one for every entry, and previously this bypassed the call entirely,
+    // producing an entry with no pointer that crashed downstream.
+    (mockedAxios.post as jest.Mock).mockResolvedValueOnce({
+      data: { jsonPath: 'http://minio/content-controls/x.json', jsonName: 'x.json' },
+    });
+
+    const result = await generator.generateContentControls({
+      ...baseRequest,
+      contentControls: [
+        {
+          title: 'previous-open-tasks-content-control',
+          type: 'empty',
+          skin: 'empty',
+          headingLevel: 1,
+          data: { type: 'empty' },
+          isExcelSpreadsheet: false,
+          forceClean: true,
+        },
+      ],
+    });
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    const [, body] = (mockedAxios.post as jest.Mock).mock.calls[0];
+    expect(body.contentControlOptions).toEqual(
+      expect.objectContaining({ title: 'previous-open-tasks-content-control', type: 'empty' }),
+    );
+    expect(result).toEqual([
+      {
+        jsonPath: 'http://minio/content-controls/x.json',
+        jsonName: 'x.json',
+        forceClean: true,
+      },
+    ]);
   });
 });
