@@ -109,6 +109,17 @@ export class DataProviderController {
     await this.forward(res, '/azure/user/profile', { orgUrl: creds.orgUrl, token: creds.token });
   }
 
+  public async getWindowsIdentity(req: Request, res: Response) {
+    const creds = this.getCreds(req, res);
+    if (!creds) return;
+    const identityId = String(req.query.identityId || '').trim();
+    await this.forward(res, '/azure/user/windows-identity', {
+      orgUrl: creds.orgUrl,
+      token: creds.token,
+      identityId,
+    });
+  }
+
   public async getCollectionLinkTypes(req: Request, res: Response) {
     const creds = this.getCreds(req, res);
     if (!creds) return;

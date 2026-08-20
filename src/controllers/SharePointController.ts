@@ -5,7 +5,12 @@ import logger from '../util/logger';
 import { getMinioFiles } from '../helpers/sharePointHelpers/sharePointHelper';
 import { SharePointConfig as ConfigModel } from '../models/SharePointConfig';
 
-const VALID_TEMPLATE_DOC_TYPES = ['STD', 'STP', 'STR', 'SVD', 'SRS', 'SYSRS'] as const;
+// Kept in sync with the toast in TemplatesTab.jsx and docs/wiki/SharePoint_Sync_Guide.txt.
+// 'MEETING-SUMMARY' matches MEETING_SUMMARY_DOC_TYPE in meetingSummaryUtils.js — the
+// isValidTemplateDocType check below uppercases the subfolder name before comparing,
+// but the original subfolder casing ("Meeting-Summary") is preserved as the docType
+// used for the MinIO path.
+const VALID_TEMPLATE_DOC_TYPES = ['STD', 'STP', 'STR', 'SVD', 'SRS', 'SYSRS', 'MEETING-SUMMARY'] as const;
 
 const isValidTemplateDocType = (docType: string) =>
   VALID_TEMPLATE_DOC_TYPES.includes((docType || '').toUpperCase() as (typeof VALID_TEMPLATE_DOC_TYPES)[number]);
@@ -28,7 +33,10 @@ export class SharePointController {
     try {
       const { siteUrl, library, folder, credentials, oauthToken } = req.body;
 
-      if (!siteUrl || !library || !folder || (!credentials && !oauthToken)) {
+      // library/folder are only meaningful for on-prem (NTLM) configs — an
+      // Online config's siteUrl is itself the pasted sharing/folder link,
+      // so library/folder are legitimately empty there.
+      if (!siteUrl || (!credentials && !oauthToken) || (!oauthToken && !folder)) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
@@ -40,7 +48,34 @@ export class SharePointController {
       res.status(200).json(result);
     } catch (error: any) {
       logger.error(`Test connection error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
+    }
+  }
+
+  /**
+   * Resolves a pasted on-prem templates-folder URL (copied from the browser
+   * address bar) into a ready-to-save { siteUrl, library, folder } — lets
+   * the connect dialog take one pasted URL instead of three typed fields.
+   * On-prem/NTLM only: Online configs already work off one pasted sharing
+   * link with no server-side resolution needed.
+   * POST /sharepoint/resolve-url
+   * Body: { url, credentials: { username, password, domain? } }
+   */
+  public async resolveUrl(req: Request, res: Response): Promise<void> {
+    try {
+      const { url, credentials } = req.body;
+
+      if (!url || !credentials) {
+        res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      const resolved = await this.sharePointService.resolveSiteFromUrl(url, credentials);
+
+      res.status(200).json({ success: true, ...resolved });
+    } catch (error: any) {
+      logger.error(`Resolve URL error: ${error.message}`);
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
@@ -53,7 +88,7 @@ export class SharePointController {
     try {
       const { siteUrl, library, folder, credentials, oauthToken } = req.body;
 
-      if (!siteUrl || !library || !folder || (!credentials && !oauthToken)) {
+      if (!siteUrl || (!credentials && !oauthToken) || (!oauthToken && !folder)) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
@@ -65,7 +100,7 @@ export class SharePointController {
       res.status(200).json({ success: true, files });
     } catch (error: any) {
       logger.error(`List files error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
@@ -79,8 +114,24 @@ export class SharePointController {
       const { siteUrl, library, folder, credentials, oauthToken, bucketName, projectName, docType } =
         req.body;
 
-      if (!siteUrl || !library || !folder || (!credentials && !oauthToken) || !bucketName || !projectName) {
+      if (
+        !siteUrl ||
+        (!credentials && !oauthToken) ||
+        (!oauthToken && !folder) ||
+        !bucketName ||
+        !projectName
+      ) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      // Templates only ever sync into a real team project's bucket path —
+      // 'shared' (the standard/shared-templates library sentinel) is not a
+      // valid sync target, enforced here too, not just in the UI.
+      if (projectName === 'shared') {
+        res
+          .status(400)
+          .json({ success: false, message: 'A team project must be selected to sync templates' });
         return;
       }
 
@@ -143,6 +194,8 @@ export class SharePointController {
               name: spFile.name,
               size: spFile.length,
               docType: targetDocType,
+              timeCreated: spFile.timeCreated,
+              timeLastModified: spFile.timeLastModified,
               existingSize: existingFile.size,
               sizeChanged: true,
             });
@@ -158,6 +211,8 @@ export class SharePointController {
             name: spFile.name,
             size: spFile.length,
             docType: targetDocType,
+            timeCreated: spFile.timeCreated,
+            timeLastModified: spFile.timeLastModified,
           });
         }
       }
@@ -175,7 +230,7 @@ export class SharePointController {
       });
     } catch (error: any) {
       logger.error(`Check conflicts error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
@@ -198,8 +253,24 @@ export class SharePointController {
         skipFiles,
       } = req.body;
 
-      if (!siteUrl || !library || !folder || (!credentials && !oauthToken) || !bucketName || !projectName) {
+      if (
+        !siteUrl ||
+        (!credentials && !oauthToken) ||
+        (!oauthToken && !folder) ||
+        !bucketName ||
+        !projectName
+      ) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      // Templates only ever sync into a real team project's bucket path —
+      // 'shared' (the standard/shared-templates library sentinel) is not a
+      // valid sync target, enforced here too, not just in the UI.
+      if (projectName === 'shared') {
+        res
+          .status(400)
+          .json({ success: false, message: 'A team project must be selected to sync templates' });
         return;
       }
 
@@ -328,6 +399,10 @@ export class SharePointController {
               teamProjectName: projectName,
               docType: targetDocType,
               isExternal: false,
+              // Real SharePoint modified date — persisted as object metadata so the
+              // Templates tab shows when the template actually changed, not when
+              // MinIO happened to store it.
+              sourceLastModified: file.timeLastModified,
             },
           };
 
@@ -351,7 +426,7 @@ export class SharePointController {
       res.status(200).json(syncResults);
     } catch (error: any) {
       logger.error(`Sync templates error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
@@ -361,15 +436,30 @@ export class SharePointController {
    */
   public async saveConfig(req: Request, res: Response): Promise<void> {
     try {
-      const { userId, projectName, siteUrl, library, folder, displayName } = req.body;
+      const { userId, siteUrl, library, folder, displayName } = req.body;
 
-      if (!siteUrl || !library || !folder) {
+      // library/folder are only meaningful for on-prem configs; an Online
+      // config's siteUrl is itself the pasted sharing/folder link, and even
+      // the on-prem paste-a-URL flow (resolveSiteFromUrl) leaves library
+      // blank (the whole path lands in folder). Neither is reliably
+      // required anymore — siteUrl is the only field every config needs.
+      if (!siteUrl) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
 
-      // Find existing config or create new
-      let config = await ConfigModel.findOne({ userId, projectName });
+      // userId must be a non-empty string, not just truthy — a missing/typed
+      // value would otherwise make the findOne below match {} (any user's
+      // config), and a JSON body lets userId be an object/query operator.
+      if (typeof userId !== 'string' || !userId.trim()) {
+        res.status(400).json({ success: false, message: 'userId is required' });
+        return;
+      }
+
+      // The SharePoint connection is app-level, not per-project: one saved
+      // config per user, usable no matter which (if any) team project is
+      // selected. Only the eventual sync target is project-scoped.
+      let config = await ConfigModel.findOne({ userId });
 
       if (config) {
         // Update existing
@@ -383,7 +473,6 @@ export class SharePointController {
         // Create new
         config = new ConfigModel({
           userId,
-          projectName,
           siteUrl,
           library,
           folder,
@@ -395,25 +484,28 @@ export class SharePointController {
       res.status(200).json({ success: true, config });
     } catch (error: any) {
       logger.error(`Save config error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
   /**
-   * Get SharePoint configuration
-   * GET /sharepoint/config?projectName=xxx
+   * Get the app-level SharePoint configuration for a user
+   * GET /sharepoint/config
    * Headers: X-User-Id
    */
   public async getConfig(req: Request, res: Response): Promise<void> {
     try {
-      const userId = req.headers['x-user-id'] as string;
-      const { projectName } = req.query;
+      const userId = req.headers['x-user-id'];
 
-      const query: any = {};
-      if (userId) query.userId = userId;
-      if (projectName) query.projectName = projectName;
+      // userId must be present, and a single string — a missing/absent
+      // header must not degrade into findOne({}), which would return
+      // (and touch the lastUsed of) an arbitrary other user's config.
+      if (typeof userId !== 'string' || !userId.trim()) {
+        res.status(400).json({ success: false, message: 'userId is required in headers' });
+        return;
+      }
 
-      const config = await ConfigModel.findOne(query).sort({ lastUsed: -1 });
+      const config = await ConfigModel.findOne({ userId }).sort({ lastUsed: -1 });
 
       if (config) {
         // Update last used
@@ -425,7 +517,7 @@ export class SharePointController {
       }
     } catch (error: any) {
       logger.error(`Get config error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
@@ -448,7 +540,7 @@ export class SharePointController {
       res.status(200).json({ success: true, configs });
     } catch (error: any) {
       logger.error(`Get configs error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
@@ -471,37 +563,36 @@ export class SharePointController {
       res.status(200).json({ success: true, configs });
     } catch (error: any) {
       logger.error(`Get all configs error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 
   /**
-   * Delete SharePoint configuration for a project
-   * DELETE /sharepoint/config?projectName=xxx
+   * Delete the app-level SharePoint configuration for a user
+   * DELETE /sharepoint/config
    * Headers: X-User-Id
    */
   public async deleteConfig(req: Request, res: Response): Promise<void> {
     try {
       const userId = req.headers['x-user-id'] as string;
-      const { projectName } = req.query;
 
-      if (!userId || !projectName) {
-        res.status(400).json({ success: false, message: 'userId and projectName are required' });
+      if (!userId) {
+        res.status(400).json({ success: false, message: 'userId is required' });
         return;
       }
 
-      const result = await ConfigModel.deleteOne({ userId, projectName: projectName as string });
+      const result = await ConfigModel.deleteOne({ userId });
 
       if (result.deletedCount === 0) {
         res.status(404).json({ success: false, message: 'Configuration not found' });
         return;
       }
 
-      logger.info(`Deleted SharePoint config for user ${userId}, project ${projectName}`);
+      logger.info(`Deleted SharePoint config for user ${userId}`);
       res.status(200).json({ success: true, message: 'Configuration deleted successfully' });
     } catch (error: any) {
       logger.error(`Delete config error: ${error.message}`);
-      res.status(500).json({ success: false, message: error.message });
+      res.status(error.status || 500).json({ success: false, message: error.message });
     }
   }
 }

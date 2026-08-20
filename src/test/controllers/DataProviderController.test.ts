@@ -137,6 +137,13 @@ describe('DataProviderController', () => {
         payload: { orgUrl: 'https://org', token: 'pat' },
       },
       {
+        name: 'getWindowsIdentity',
+        call: (c, r, s) => c.getWindowsIdentity(r, s),
+        req: { headers, query: { identityId: 'vsid-1' } },
+        path: '/azure/user/windows-identity',
+        payload: { orgUrl: 'https://org', token: 'pat', identityId: 'vsid-1' },
+      },
+      {
         name: 'getCollectionLinkTypes',
         call: (c, r, s) => c.getCollectionLinkTypes(r, s),
         req: { headers },
@@ -492,6 +499,7 @@ describe('DataProviderController', () => {
     const methods = [
       'getTeamProjects',
       'getUserProfile',
+      'getWindowsIdentity',
       'getCollectionLinkTypes',
       'getSharedQueries',
       'getFieldsByType',

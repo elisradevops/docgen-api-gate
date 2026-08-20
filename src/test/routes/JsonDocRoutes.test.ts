@@ -607,6 +607,26 @@ describe('JsonDocRoutes', () => {
     expect(res.body).toEqual({ status: 404, message: 'download-not-found' });
   });
 
+  test('GET /minio/download forwards a structured controller error (status/code/dependency) instead of hardcoding 404', async () => {
+    const { app, routes } = createAppAndRoutes();
+    const structuredError: any = new Error('Failed to fetch templates/proj/STD/file.dotx from MinIO: AccessDenied');
+    structuredError.statusCode = 403;
+    structuredError.code = 'AccessDenied';
+    structuredError.dependency = 'minio';
+    (routes.minioController as any).downloadFile = jest.fn().mockRejectedValue(structuredError);
+
+    const res = await withLocalAgent(app, (agent) =>
+      agent.get('/minio/download/templates/proj/STD/file.dotx').expect(403)
+    );
+
+    expect(res.body).toEqual({
+      status: 403,
+      message: 'Failed to fetch templates/proj/STD/file.dotx from MinIO: AccessDenied',
+      code: 'AccessDenied',
+      dependency: 'minio',
+    });
+  });
+
   test('GET /dataBase/getFavorites returns 200 on success', async () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).getFavorites = jest.fn().mockImplementation(async (_req, res) => {
@@ -736,6 +756,9 @@ describe('JsonDocRoutes', () => {
     sp.getAllConfigs = jest.fn().mockImplementation(async (_req, res) => {
       res.status(200).json({ ok: 'getAllConfigs' });
     });
+    sp.resolveUrl = jest.fn().mockImplementation(async (_req, res) => {
+      res.status(200).json({ ok: 'resolveUrl' });
+    });
 
     await withLocalAgent(app, async (agent) => {
       await agent.post('/sharepoint/test-connection').expect(200);
@@ -747,6 +770,7 @@ describe('JsonDocRoutes', () => {
       await agent.delete('/sharepoint/config').expect(200);
       await agent.get('/sharepoint/configs').expect(200);
       await agent.get('/sharepoint/configs/all').expect(200);
+      await agent.post('/sharepoint/resolve-url').expect(200);
     });
 
     expect(sp.testConnection).toHaveBeenCalled();
@@ -758,5 +782,6 @@ describe('JsonDocRoutes', () => {
     expect(sp.deleteConfig).toHaveBeenCalled();
     expect(sp.getConfigs).toHaveBeenCalled();
     expect(sp.getAllConfigs).toHaveBeenCalled();
+    expect(sp.resolveUrl).toHaveBeenCalled();
   });
 });

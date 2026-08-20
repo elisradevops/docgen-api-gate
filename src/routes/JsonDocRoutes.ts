@@ -598,6 +598,9 @@ export class Routes {
       .route('/azure/user/profile')
       .get((req: Request, res: Response) => this.dataProviderController.getUserProfile(req, res));
     app
+      .route('/azure/user/windows-identity')
+      .get((req: Request, res: Response) => this.dataProviderController.getWindowsIdentity(req, res));
+    app
       .route('/azure/link-types')
       .get((req: Request, res: Response) => this.dataProviderController.getCollectionLinkTypes(req, res));
 
@@ -708,7 +711,12 @@ export class Routes {
       .route('/sharepoint/configs/all')
       .get((req: Request, res: Response) => this.sharePointController.getAllConfigs(req, res));
 
-    // Note: OAuth is now handled by frontend (SPA flow with PKCE)
-    // Backend only provides SharePoint REST API access with OAuth tokens from frontend
+    app
+      .route('/sharepoint/resolve-url')
+      .post((req: Request, res: Response) => this.sharePointController.resolveUrl(req, res));
+
+    // Note: for SharePoint Online, the frontend sends a Microsoft Graph access
+    // token the user pastes in (e.g. from Graph Explorer) — no Azure AD app
+    // registration or OAuth popup involved.
   }
 }

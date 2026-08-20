@@ -195,7 +195,7 @@ export class MinioController {
         return reject('No file provided');
       }
 
-      const { docType, teamProjectName, isExternalUrl, createdBy, createdById } = req.body;
+      const { docType, teamProjectName, isExternalUrl, createdBy, createdById, sourceLastModified } = req.body;
       let { bucketName } = req.body;
       const uploadPurpose = String(req.body?.purpose || '')
         .trim()
@@ -283,6 +283,12 @@ export class MinioController {
         const safeCreatedById = this.encodeMetadataHeaderValue(createdById, 256);
         if (safeCreatedById) {
           uploadMetadata.createdById = safeCreatedById;
+        }
+      }
+      if (String(sourceLastModified || '').trim()) {
+        const safeSourceLastModified = this.encodeMetadataHeaderValue(sourceLastModified, 64);
+        if (safeSourceLastModified) {
+          uploadMetadata.sourceLastModified = safeSourceLastModified;
         }
       }
       // Ensure the bucket exists before uploading the file
@@ -707,6 +713,14 @@ export class MinioController {
                 'inputdetails',
               ]),
             );
+            obj.sourceLastModified = this.decodeMetadataHeaderValue(
+              this.getFirstMetadataValue(metaData, [
+                'sourceLastModified',
+                'sourcelastmodified',
+                'x-amz-meta-sourceLastModified',
+                'x-amz-meta-sourcelastmodified',
+              ]),
+            );
           }
         } catch (error) {
           logger.error(`Error fetching metadata for ${obj.name}:`, error);
@@ -714,6 +728,7 @@ export class MinioController {
           obj.createdById = '';
           obj.inputSummary = '';
           obj.inputDetailsKey = '';
+          obj.sourceLastModified = '';
         }
         objects.push(obj);
       })();

@@ -42,7 +42,7 @@ export default class App {
         return callback(new Error(`CORS blocked for origin: ${origin}`));
       },
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'X-Ado-Org-Url', 'X-Ado-PAT'],
+      allowedHeaders: ['Content-Type', 'X-Ado-Org-Url', 'X-Ado-PAT', 'X-User-Id'],
       optionsSuccessStatus: 204,
     };
   }
