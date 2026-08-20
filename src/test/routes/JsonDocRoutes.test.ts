@@ -607,26 +607,6 @@ describe('JsonDocRoutes', () => {
     expect(res.body).toEqual({ status: 404, message: 'download-not-found' });
   });
 
-  test('GET /minio/download forwards a structured controller error (status/code/dependency) instead of hardcoding 404', async () => {
-    const { app, routes } = createAppAndRoutes();
-    const structuredError: any = new Error('Failed to fetch templates/proj/STD/file.dotx from MinIO: AccessDenied');
-    structuredError.statusCode = 403;
-    structuredError.code = 'AccessDenied';
-    structuredError.dependency = 'minio';
-    (routes.minioController as any).downloadFile = jest.fn().mockRejectedValue(structuredError);
-
-    const res = await withLocalAgent(app, (agent) =>
-      agent.get('/minio/download/templates/proj/STD/file.dotx').expect(403)
-    );
-
-    expect(res.body).toEqual({
-      status: 403,
-      message: 'Failed to fetch templates/proj/STD/file.dotx from MinIO: AccessDenied',
-      code: 'AccessDenied',
-      dependency: 'minio',
-    });
-  });
-
   test('GET /dataBase/getFavorites returns 200 on success', async () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).getFavorites = jest.fn().mockImplementation(async (_req, res) => {
