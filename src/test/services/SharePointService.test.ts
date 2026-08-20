@@ -158,6 +158,29 @@ describe('SharePointService', () => {
       );
     });
 
+    // Regression: a pasted templates folder that doesn't exist on the
+    // SharePoint server returns SharePoint's own REST error body (a 404
+    // with an OData error object), not a list. That specific, human-
+    // readable message ("File Not Found.") must reach the user instead of
+    // the generic "Unexpected response... Body preview: {...}" dump.
+    test('surfaces SharePoint\'s own error message when the templates folder does not exist', async () => {
+      const service = new SharePointService();
+      (jest as any).spyOn(service as any, 'makeSharePointRequest').mockResolvedValueOnce({
+        status: 404,
+        data: {
+          error: {
+            code: '-2130575338, Microsoft.SharePoint.SPException',
+            message: { lang: 'en-US', value: 'File Not Found.' },
+          },
+        },
+        headers: { 'content-type': 'application/json;odata=verbose' },
+      });
+
+      await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(
+        /SharePoint returned an error while fetching subfolders: File Not Found\./
+      );
+    });
+
     test('aggregates .docx/.dotx files per subfolder as docType', async () => {
       const service = new SharePointService();
       const makeReqSpy = (jest as any)

@@ -198,6 +198,19 @@ export class SharePointService {
     if (response?.data?.d?.results) {
       return;
     }
+
+    // A path that doesn't exist (e.g. the pasted templates folder itself,
+    // or a subfolder deleted mid-sync) comes back as SharePoint's own REST
+    // error body, not a list — it already carries a specific,
+    // human-readable message ("File Not Found.", "Access is denied.", etc).
+    // Surface that directly instead of falling through to the generic
+    // body-preview dump below, which reads as a raw technical error rather
+    // than something a user can act on.
+    const odataMessage = response?.data?.error?.message?.value;
+    if (typeof odataMessage === 'string' && odataMessage.trim()) {
+      throw new Error(`SharePoint returned an error while fetching ${context}: ${odataMessage.trim()}`);
+    }
+
     const contentType = response?.headers?.['content-type'] || 'unknown';
     const bodyPreview =
       typeof response?.data === 'string' ? response.data.slice(0, 200) : JSON.stringify(response?.data).slice(0, 200);
