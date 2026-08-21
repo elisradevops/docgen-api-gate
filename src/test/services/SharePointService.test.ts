@@ -129,15 +129,20 @@ describe('SharePointService', () => {
   });
 
   describe('listTemplateFiles', () => {
+    // The recursive walk fetches Files then Folders at each level, root
+    // first — so the first mocked call is always the root folder's Files.
     test('throws instead of silently returning [] when subfolders response is not the expected JSON shape', async () => {
       const service = new SharePointService();
-      (jest as any).spyOn(service as any, 'makeSharePointRequest').mockResolvedValueOnce({
-        data: '<feed xmlns="http://www.w3.org/2005/Atom">...</feed>',
-        headers: { 'content-type': 'application/atom+xml' },
-      });
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: '<feed xmlns="http://www.w3.org/2005/Atom">...</feed>',
+          headers: { 'content-type': 'application/atom+xml' },
+        }); // Folders(root) — bad shape
 
       await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(
-        /Unexpected response fetching subfolders/
+        /Unexpected response fetching subfolders in/
       );
     });
 
@@ -145,16 +150,17 @@ describe('SharePointService', () => {
       const service = new SharePointService();
       (jest as any)
         .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
         .mockResolvedValueOnce({
           data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
-        })
+        }) // Folders(root)
         .mockResolvedValueOnce({
           data: '<feed xmlns="http://www.w3.org/2005/Atom">...</feed>',
           headers: { 'content-type': 'application/atom+xml' },
-        });
+        }); // Files(SVD) — bad shape
 
       await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(
-        /Unexpected response fetching files in subfolder "SVD"/
+        /Unexpected response fetching files in/
       );
     });
 
@@ -177,15 +183,17 @@ describe('SharePointService', () => {
       });
 
       await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(
-        /SharePoint returned an error while fetching subfolders: File Not Found\./
+        /SharePoint returned an error while fetching files in ".*": File Not Found\./
       );
     });
 
-    test('aggregates .docx/.dotx files per subfolder as docType', async () => {
+    test('aggregates .docx/.dotx files per subfolder as docType, tagged with a relativePath', async () => {
       const service = new SharePointService();
       const makeReqSpy = (jest as any)
         .spyOn(service as any, 'makeSharePointRequest')
-        // First call: subfolders list
+        // 1: Files at root — none directly at the connected root
+        .mockResolvedValueOnce({ data: { d: { results: [] } } })
+        // 2: Folders at root
         .mockResolvedValueOnce({
           data: {
             d: {
@@ -196,7 +204,7 @@ describe('SharePointService', () => {
             },
           },
         })
-        // Second call: files in SVD subfolder
+        // 3: Files in SVD subfolder
         .mockResolvedValueOnce({
           data: {
             d: {
@@ -217,11 +225,16 @@ describe('SharePointService', () => {
               ],
             },
           },
-        });
+        })
+        // 4: Folders in SVD subfolder — no further nesting
+        .mockResolvedValueOnce({ data: { d: { results: [] } } });
 
-      const files = await service.listTemplateFiles(baseConfig, creds);
+      const { files, truncated } = await service.listTemplateFiles(baseConfig, creds);
 
-      expect(makeReqSpy).toHaveBeenCalledTimes(2);
+      // Files(root), Folders(root), Files(SVD), Folders(SVD). _hidden must
+      // never be queued — no calls issued for it.
+      expect(makeReqSpy).toHaveBeenCalledTimes(4);
+      expect(truncated).toBe(false);
       expect(files).toEqual([
         {
           name: 'SVD-template.docx',
@@ -230,6 +243,116 @@ describe('SharePointService', () => {
           timeLastModified: '2024-01-01T00:00:00Z',
           length: 1234,
           docType: 'SVD',
+          relativePath: 'SVD/SVD-template.docx',
+        },
+      ]);
+    });
+
+    // A3: the BFS walk now fetches CONCURRENT_FOLDER_FETCHES folders at a
+    // time instead of one at a time. This must not change the output —
+    // uses mockImplementation keyed on the actual URL requested (not a
+    // fixed mockResolvedValueOnce queue) so the assertions hold regardless
+    // of which order the concurrent fetches actually settle in.
+    test('processes a wide batch of subfolders concurrently with deterministic, correctly-associated output', async () => {
+      const service = new SharePointService();
+      const subfolderNames = ['F0', 'F1', 'F2', 'F3', 'F4', 'F5']; // 6 — spans 2 batches at CONCURRENT_FOLDER_FETCHES=4
+
+      (jest as any).spyOn(service as any, 'makeSharePointRequest').mockImplementation(async (url: string) => {
+        const rootFilesUrl =
+          "http://sp-server/sites/project/_api/web/GetFolderByServerRelativeUrl('/sites/project/Templates/DocGen')/Files";
+        const rootFoldersUrl =
+          "http://sp-server/sites/project/_api/web/GetFolderByServerRelativeUrl('/sites/project/Templates/DocGen')/Folders";
+
+        if (url === rootFilesUrl) return { data: { d: { results: [] } } };
+        if (url === rootFoldersUrl) {
+          return {
+            data: {
+              d: {
+                results: subfolderNames.map((name) => ({
+                  Name: name,
+                  ServerRelativeUrl: `/sites/project/Templates/DocGen/${name}`,
+                })),
+              },
+            },
+          };
+        }
+
+        for (const name of subfolderNames) {
+          const filesUrl = `http://sp-server/sites/project/_api/web/GetFolderByServerRelativeUrl('/sites/project/Templates/DocGen/${name}')/Files`;
+          const foldersUrl = `http://sp-server/sites/project/_api/web/GetFolderByServerRelativeUrl('/sites/project/Templates/DocGen/${name}')/Folders`;
+          if (url === filesUrl) {
+            return {
+              data: {
+                d: {
+                  results: [
+                    {
+                      Name: `${name}-template.docx`,
+                      ServerRelativeUrl: `/sites/project/Templates/DocGen/${name}/${name}-template.docx`,
+                      TimeLastModified: '2024-01-01T00:00:00Z',
+                      Length: 10,
+                    },
+                  ],
+                },
+              },
+            };
+          }
+          if (url === foldersUrl) return { data: { d: { results: [] } } };
+        }
+
+        throw new Error(`Unexpected URL in test: ${url}`);
+      });
+
+      const { files, truncated } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(truncated).toBe(false);
+      expect(files).toHaveLength(6);
+      // Deterministic: output must follow original queue (BFS) order, not
+      // whatever order the concurrent batch happened to settle in.
+      expect(files.map((f) => f.relativePath)).toEqual([
+        'F0/F0-template.docx',
+        'F1/F1-template.docx',
+        'F2/F2-template.docx',
+        'F3/F3-template.docx',
+        'F4/F4-template.docx',
+        'F5/F5-template.docx',
+      ]);
+      files.forEach((f, i) => expect(f.docType).toBe(subfolderNames[i]));
+    });
+
+    test('lists a file sitting directly at the connected root with no docType (flat-folder case)', async () => {
+      const service = new SharePointService();
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        // 1: Files at root — a flat folder's files live here directly
+        .mockResolvedValueOnce({
+          data: {
+            d: {
+              results: [
+                {
+                  Name: 'Some-Template.dotx',
+                  ServerRelativeUrl: '/sites/project/Templates/DocGen/Some-Template.dotx',
+                  TimeLastModified: '2024-01-01T00:00:00Z',
+                  Length: 500,
+                },
+              ],
+            },
+          },
+        })
+        // 2: Folders at root — none
+        .mockResolvedValueOnce({ data: { d: { results: [] } } });
+
+      const { files, truncated } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(truncated).toBe(false);
+      expect(files).toEqual([
+        {
+          name: 'Some-Template.dotx',
+          serverRelativeUrl: '/sites/project/Templates/DocGen/Some-Template.dotx',
+          timeCreated: undefined,
+          timeLastModified: '2024-01-01T00:00:00Z',
+          length: 500,
+          docType: undefined,
+          relativePath: 'Some-Template.dotx',
         },
       ]);
     });
@@ -238,9 +361,10 @@ describe('SharePointService', () => {
       const service = new SharePointService();
       (jest as any)
         .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
         .mockResolvedValueOnce({
           data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
-        })
+        }) // Folders(root)
         .mockResolvedValueOnce({
           data: {
             d: {
@@ -256,9 +380,10 @@ describe('SharePointService', () => {
               ],
             },
           },
-        });
+        }) // Files(SVD)
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }); // Folders(SVD)
 
-      const files = await service.listTemplateFiles(baseConfig, creds);
+      const { files } = await service.listTemplateFiles(baseConfig, creds);
 
       expect(files).toEqual([]);
     });
@@ -267,9 +392,10 @@ describe('SharePointService', () => {
       const service = new SharePointService();
       (jest as any)
         .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
         .mockResolvedValueOnce({
           data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
-        })
+        }) // Folders(root)
         .mockResolvedValueOnce({
           data: {
             d: {
@@ -283,12 +409,192 @@ describe('SharePointService', () => {
               ],
             },
           },
-        });
+        }) // Files(SVD)
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }); // Folders(SVD)
 
-      const files = await service.listTemplateFiles(baseConfig, creds);
+      const { files } = await service.listTemplateFiles(baseConfig, creds);
 
       expect(files).toEqual([]);
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('exceeds the sync limit'));
+    });
+
+    test('truncates and flags it when the file count cap is hit', async () => {
+      const service = new SharePointService();
+      // One over the cap — the 501st push is what actually flips
+      // `truncated`. Since fetchFolder always fetches /Folders too (the
+      // running total across a concurrent batch isn't known per-item, so
+      // the old per-item short-circuit isn't available), Folders(root)
+      // still needs a mock even though its result is discarded once
+      // truncation is detected while accumulating this folder's files.
+      const manyFiles = Array.from({ length: 501 }, (_, i) => ({
+        Name: `T${i}.docx`,
+        ServerRelativeUrl: `/sites/project/Templates/DocGen/T${i}.docx`,
+        TimeLastModified: '2024-01-01T00:00:00Z',
+        Length: 10,
+      }));
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        // Files(root) — over the 500-file cap in one response
+        .mockResolvedValueOnce({ data: { d: { results: manyFiles } } })
+        // Folders(root) — fetched regardless, result discarded
+        .mockResolvedValueOnce({ data: { d: { results: [] } } });
+
+      const { files, truncated } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(truncated).toBe(true);
+      expect(files).toHaveLength(500);
+    });
+
+    test('skips a permission-denied subfolder (resolved 403) and keeps files already found', async () => {
+      const service = new SharePointService();
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
+        }) // Folders(root)
+        .mockResolvedValueOnce({
+          status: 403,
+          data: { error: { message: { value: 'Access is denied.' } } },
+        }); // Files(SVD) — denied
+
+      const { files, truncated, skippedFolders } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(truncated).toBe(false);
+      expect(files).toEqual([]);
+      expect(skippedFolders).toEqual([{ relativePath: 'SVD', reason: 'Access is denied.' }]);
+    });
+
+    test('skips a permission-denied subfolder when the request throws (OAuth-on-onprem 403)', async () => {
+      const service = new SharePointService();
+      const denied: any = new Error('Forbidden');
+      denied.response = { status: 403, headers: {} };
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
+        }) // Folders(root)
+        .mockRejectedValueOnce(denied); // Files(SVD) — thrown 403
+
+      const { skippedFolders } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(skippedFolders).toEqual([{ relativePath: 'SVD', reason: 'Forbidden' }]);
+    });
+
+    test('a subfolder denied only on its Folders fetch keeps its own files but does not descend', async () => {
+      const service = new SharePointService();
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
+        }) // Folders(root)
+        .mockResolvedValueOnce({
+          data: {
+            d: {
+              results: [
+                {
+                  Name: 'SVD-template.docx',
+                  ServerRelativeUrl: '/sites/project/Templates/SVD/SVD-template.docx',
+                  TimeLastModified: '2024-01-01T00:00:00Z',
+                  Length: 10,
+                },
+              ],
+            },
+          },
+        }) // Files(SVD) — succeeds
+        .mockResolvedValueOnce({ status: 403, data: { error: { message: { value: 'Access is denied.' } } } }); // Folders(SVD) — denied
+
+      const { files, skippedFolders } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(files).toHaveLength(1);
+      expect(files[0].name).toBe('SVD-template.docx');
+      expect(skippedFolders).toEqual([{ relativePath: 'SVD', reason: 'Access is denied.' }]);
+    });
+
+    test('a denied connected root (depth 0) always aborts the whole listing, never skips', async () => {
+      const service = new SharePointService();
+      (jest as any).spyOn(service as any, 'makeSharePointRequest').mockResolvedValueOnce({
+        status: 403,
+        data: { error: { message: { value: 'Access is denied.' } } },
+      }); // Files(root) — denied
+
+      await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(/Access is denied\./);
+    });
+
+    test('a 401 is never tolerated — stays fatal even on a subfolder (credentials are the problem, not the folder)', async () => {
+      const service = new SharePointService();
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
+        }) // Folders(root)
+        .mockResolvedValueOnce({
+          status: 401,
+          data: { error: { message: { value: 'Access is denied.' } } },
+        }); // Files(SVD) — 401, must NOT be tolerated despite the "Access is denied." wording
+
+      await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(/Access is denied\./);
+    });
+
+    test('tolerates a non-403 status whose OData message says access is denied', async () => {
+      const service = new SharePointService();
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
+        }) // Folders(root)
+        .mockResolvedValueOnce({
+          status: 500,
+          data: { error: { message: { value: 'You do not have permission to view this directory.' } } },
+        }); // Files(SVD) — non-403 status, denial-shaped message
+
+      const { skippedFolders } = await service.listTemplateFiles(baseConfig, creds);
+
+      expect(skippedFolders).toEqual([
+        { relativePath: 'SVD', reason: 'You do not have permission to view this directory.' },
+      ]);
+    });
+
+    test('a malformed/unrecognized response on a subfolder is still fatal, not skipped (A2 must not weaken this)', async () => {
+      const service = new SharePointService();
+      (jest as any)
+        .spyOn(service as any, 'makeSharePointRequest')
+        .mockResolvedValueOnce({ data: { d: { results: [] } } }) // Files(root)
+        .mockResolvedValueOnce({
+          data: { d: { results: [{ Name: 'SVD', ServerRelativeUrl: '/sites/project/Templates/SVD' }] } },
+        }) // Folders(root)
+        .mockResolvedValueOnce({
+          data: '<feed xmlns="http://www.w3.org/2005/Atom">...</feed>',
+          headers: { 'content-type': 'application/atom+xml' },
+        }); // Files(SVD) — malformed, not a denial shape at all
+
+      await expect(service.listTemplateFiles(baseConfig, creds)).rejects.toThrow(/Unexpected response fetching/);
+    });
+
+    test('caps recorded skippedFolders and notes the true remaining count', async () => {
+      const service = new SharePointService();
+      const subfolderCount = 27; // over MAX_SKIPPED_FOLDERS_RECORDED (25)
+      const subfolders = Array.from({ length: subfolderCount }, (_, i) => ({
+        Name: `Denied${i}`,
+        ServerRelativeUrl: `/sites/project/Templates/Denied${i}`,
+      }));
+
+      const spy = (jest as any).spyOn(service as any, 'makeSharePointRequest');
+      spy.mockResolvedValueOnce({ data: { d: { results: [] } } }); // Files(root)
+      spy.mockResolvedValueOnce({ data: { d: { results: subfolders } } }); // Folders(root)
+      for (let i = 0; i < subfolderCount; i++) {
+        spy.mockResolvedValueOnce({ status: 403, data: { error: { message: { value: 'Access is denied.' } } } });
+      }
+
+      const { skippedFolders } = await service.listTemplateFiles(baseConfig, creds);
+
+      // 25 recorded entries + 1 summary entry for the remaining 2.
+      expect(skippedFolders).toHaveLength(26);
+      expect(skippedFolders[25].reason).toContain('2 more folder(s)');
     });
 
     test('throws descriptive error when makeSharePointRequest fails', async () => {
@@ -323,13 +629,14 @@ describe('SharePointService', () => {
       ];
       const graphSpy = (jest as any)
         .spyOn((service as any).graphService, 'listTemplateFiles')
-        .mockResolvedValueOnce(graphFiles);
+        .mockResolvedValueOnce({ files: graphFiles, truncated: false });
       const restSpy = (jest as any).spyOn(service as any, 'makeSharePointRequest');
 
-      const files = await service.listTemplateFiles(onlineConfig, token);
+      const { files, truncated } = await service.listTemplateFiles(onlineConfig, token);
 
       expect(graphSpy).toHaveBeenCalledWith(onlineConfig.siteUrl, token);
       expect(restSpy).not.toHaveBeenCalled();
+      expect(truncated).toBe(false);
       expect(files).toEqual(graphFiles);
     });
   });
@@ -422,7 +729,8 @@ describe('SharePointService', () => {
       expect(ntlmSpy).toHaveBeenCalledWith(
         'http://sp-server/sites/project/Shared Documents/02 Engineering/Templates/_api/web?$select=ServerRelativeUrl',
         creds,
-        'GET'
+        'GET',
+        { timeout: 15000 }
       );
       expect(result).toEqual({
         siteUrl: 'http://sp-server/sites/project',
@@ -442,7 +750,8 @@ describe('SharePointService', () => {
       expect(ntlmSpy).toHaveBeenCalledWith(
         'http://sp-server/sites/project/Templates/_api/web?$select=ServerRelativeUrl',
         creds,
-        'GET'
+        'GET',
+        { timeout: 15000 }
       );
     });
 
@@ -460,7 +769,8 @@ describe('SharePointService', () => {
       expect(ntlmSpy).toHaveBeenCalledWith(
         'http://elissp/DevOPs/Shared Documents/Forms/AllItems.aspx/_api/web?$select=ServerRelativeUrl',
         creds,
-        'GET'
+        'GET',
+        { timeout: 15000 }
       );
     });
 
@@ -504,21 +814,49 @@ describe('SharePointService', () => {
       expect(rebuilt).toBe('/sites/project/Shared Documents/Templates');
     });
 
-    test('throws a descriptive error when the response has no ServerRelativeUrl', async () => {
+    test('throws a descriptive error when every candidate depth has no ServerRelativeUrl', async () => {
       const service = new SharePointService();
-      (jest as any).spyOn(service as any, 'makeNTLMRequest').mockResolvedValueOnce({
+      // Every candidate (full path down to the bare origin) gets the same
+      // non-matching response — none resolve, so the walk must exhaust all
+      // of them before throwing.
+      const ntlmSpy = (jest as any).spyOn(service as any, 'makeNTLMRequest').mockResolvedValue({
+        status: 404,
         data: '<feed xmlns="http://www.w3.org/2005/Atom">...</feed>',
         headers: { 'content-type': 'application/atom+xml' },
       });
 
       await expect(
         service.resolveSiteFromUrl('http://sp-server/sites/project/Templates', creds)
-      ).rejects.toThrow(/Could not resolve a SharePoint site from this URL/);
+      ).rejects.toThrow(/Unexpected response fetching a SharePoint site for this URL.*status: 404/);
+
+      // 'sites', 'project', 'Templates' -> depths 3,2,1,0 = 4 attempts.
+      expect(ntlmSpy).toHaveBeenCalledTimes(4);
     });
 
-    test('propagates a rejected request as a descriptive error', async () => {
+    test('walks to a shallower candidate when the deepest path 500s (root-web site with a deep folder path)', async () => {
       const service = new SharePointService();
-      (jest as any).spyOn(service as any, 'makeNTLMRequest').mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      const ntlmSpy = (jest as any)
+        .spyOn(service as any, 'makeNTLMRequest')
+        // Deepest candidate (the full pasted path) fails, same as the real
+        // production 500 this fix targets.
+        .mockResolvedValueOnce({ status: 500, data: '', headers: {} })
+        // Bare origin (root web) resolves.
+        .mockResolvedValueOnce({ data: { d: { ServerRelativeUrl: '/' } } });
+
+      const result = await service.resolveSiteFromUrl(
+        'http://elissp/Project/Shared Documents/Training and Templates/DocGen Templates',
+        creds
+      );
+
+      expect(ntlmSpy).toHaveBeenCalledTimes(2);
+      // No doubled trailing slash from ServerRelativeUrl being "/".
+      expect(result.siteUrl).toBe('http://elissp');
+      expect(result.folder).toBe('Project/Shared Documents/Training and Templates/DocGen Templates');
+    });
+
+    test('propagates a rejected request as a descriptive error when every candidate rejects', async () => {
+      const service = new SharePointService();
+      (jest as any).spyOn(service as any, 'makeNTLMRequest').mockRejectedValue(new Error('ECONNREFUSED'));
 
       await expect(
         service.resolveSiteFromUrl('http://sp-server/sites/project/Templates', creds)
@@ -587,6 +925,96 @@ describe('SharePointService', () => {
     });
   });
 
+  describe('makeSharePointRequest throttle retry', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    // Drives fake timers forward while withThrottleRetry is awaiting sleep().
+    async function flushRetries() {
+      for (let i = 0; i < 5; i++) {
+        await Promise.resolve();
+        jest.runAllTimers();
+      }
+    }
+
+    test('retries an NTLM 429 response (resolved, not thrown) and succeeds on the next attempt', async () => {
+      const service = new SharePointService();
+      const makeNtlmSpy = (jest as any)
+        .spyOn(service as any, 'makeNTLMRequest')
+        .mockResolvedValueOnce({ status: 429, data: {}, headers: { 'retry-after': '1' } })
+        .mockResolvedValueOnce({ status: 200, data: { ok: true }, headers: {} });
+
+      const promise = (service as any).makeSharePointRequest('http://url', creds, 'GET', {});
+      await flushRetries();
+      const result = await promise;
+
+      expect(result).toEqual({ status: 200, data: { ok: true }, headers: {} });
+      expect(makeNtlmSpy).toHaveBeenCalledTimes(2);
+    });
+
+    test('retries a thrown OAuth 429 error and succeeds', async () => {
+      const service = new SharePointService();
+      const err: any = new Error('Too Many Requests');
+      err.response = { status: 429, headers: {} };
+      const makeOAuthSpy = (jest as any)
+        .spyOn(service as any, 'makeOAuthRequest')
+        .mockRejectedValueOnce(err)
+        .mockResolvedValueOnce({ status: 200, data: {}, headers: {} });
+      const token: SharePointOAuthToken = { accessToken: 'token' };
+
+      const promise = (service as any).makeSharePointRequest('http://url', token, 'GET', {});
+      await flushRetries();
+      const result = await promise;
+
+      expect(result.status).toBe(200);
+      expect(makeOAuthSpy).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not retry a non-throttling status (e.g. 404 — a real "not found", not overload)', async () => {
+      const service = new SharePointService();
+      const makeNtlmSpy = (jest as any)
+        .spyOn(service as any, 'makeNTLMRequest')
+        .mockResolvedValue({ status: 404, data: {}, headers: {} });
+
+      const result = await (service as any).makeSharePointRequest('http://url', creds, 'GET', {});
+
+      expect(result.status).toBe(404);
+      expect(makeNtlmSpy).toHaveBeenCalledTimes(1);
+    });
+
+    test('defaults a request timeout when the caller does not set one', async () => {
+      const service = new SharePointService();
+      const makeNtlmSpy = (jest as any)
+        .spyOn(service as any, 'makeNTLMRequest')
+        .mockResolvedValueOnce({ status: 200, data: {}, headers: {} });
+
+      await (service as any).makeSharePointRequest('http://url', creds, 'GET', {});
+
+      expect(makeNtlmSpy).toHaveBeenCalledWith(
+        'http://url',
+        creds,
+        'GET',
+        expect.objectContaining({ timeout: 15000 })
+      );
+    });
+
+    test('a caller-supplied timeout wins over the default', async () => {
+      const service = new SharePointService();
+      const makeNtlmSpy = (jest as any)
+        .spyOn(service as any, 'makeNTLMRequest')
+        .mockResolvedValueOnce({ status: 200, data: {}, headers: {} });
+
+      await (service as any).makeSharePointRequest('http://url', creds, 'GET', { timeout: 5000 });
+
+      expect(makeNtlmSpy).toHaveBeenCalledWith('http://url', creds, 'GET', expect.objectContaining({ timeout: 5000 }));
+    });
+  });
+
   describe('toServerRelativeUrlLiteral', () => {
     test('percent-encodes spaces within a segment but leaves "/" as a literal separator', () => {
       const service = new SharePointService();
@@ -627,6 +1055,28 @@ describe('SharePointService', () => {
       expect(mockLogger.warn).toHaveBeenCalledWith(
         'Failed to parse SharePoint URL: not-a-url, using root path'
       );
+    });
+
+    test('constructFolderPath adds a leading slash for a root-web site (empty site path)', () => {
+      const service = new SharePointService();
+      const path = (service as any).constructFolderPath({
+        siteUrl: 'http://elissp',
+        library: '',
+        folder: 'Project/Shared Documents/DocGen Templates',
+      });
+
+      expect(path).toBe('/Project/Shared Documents/DocGen Templates');
+    });
+
+    test('constructFolderPath is unaffected for a /sites/x site (already has a leading slash)', () => {
+      const service = new SharePointService();
+      const path = (service as any).constructFolderPath({
+        siteUrl: 'http://sp-server/sites/project',
+        library: 'Shared Documents',
+        folder: 'Templates',
+      });
+
+      expect(path).toBe('/sites/project/Shared Documents/Templates');
     });
 
     test('makeOAuthRequest sends bearer token and merges headers', async () => {

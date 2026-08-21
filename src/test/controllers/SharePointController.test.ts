@@ -205,13 +205,13 @@ describe('SharePointController', () => {
      */
     test('200 on success', async () => {
       const res = buildRes();
-      mockSvc.listTemplateFiles.mockResolvedValueOnce([{ name: 'a' }]);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [{ name: 'a' }], truncated: false });
       await controller.listFiles(
         { body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } } } as any,
         res
       );
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.body).toEqual({ success: true, files: [{ name: 'a' }] });
+      expect(res.body).toEqual({ success: true, files: [{ name: 'a' }], truncated: false, skippedFolders: [] });
     });
 
     test('500 on service error', async () => {
@@ -248,7 +248,7 @@ describe('SharePointController', () => {
     // testing the real "Sync from SharePoint" flow end to end.
     test('200 with oauthToken even when library/folder are empty (Online config)', async () => {
       const res = buildRes();
-      mockSvc.listTemplateFiles.mockResolvedValueOnce([{ name: 'SVD-template.docx' }]);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [{ name: 'SVD-template.docx' }], truncated: false });
       await controller.listFiles(
         {
           body: {
@@ -261,7 +261,12 @@ describe('SharePointController', () => {
         res
       );
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.body).toEqual({ success: true, files: [{ name: 'SVD-template.docx' }] });
+      expect(res.body).toEqual({
+        success: true,
+        files: [{ name: 'SVD-template.docx' }],
+        truncated: false,
+        skippedFolders: [],
+      });
     });
 
     test('400 with NTLM credentials when folder is empty', async () => {
@@ -314,13 +319,13 @@ describe('SharePointController', () => {
      * checkConflicts (computes conflict/new/invalid)
      * Aggregates SharePoint and MinIO results to identify conflicts, new files, and invalid files by docType.
      */
-    test('returns conflicts, newFiles, invalidFiles', async () => {
+    test('returns conflicts, newFiles (including a needs-mapping row for an unrecognized docType)', async () => {
       const files = [
-        { name: 'STD/file1.dotx', length: 10, docType: 'STD' },
-        { name: 'BAD/file2.dotx', length: 20, docType: 'BAD' },
-        { name: 'STR/file3.dotx', length: 30, docType: 'STR' },
+        { name: 'STD/file1.dotx', length: 10, docType: 'STD', relativePath: 'STD/file1.dotx' },
+        { name: 'BAD/file2.dotx', length: 20, docType: 'BAD', relativePath: 'BAD/file2.dotx' },
+        { name: 'STR/file3.dotx', length: 30, docType: 'STR', relativePath: 'STR/file3.dotx' },
       ];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 99 }]); // cause conflict by size change
       mockGetMinioFiles.mockResolvedValueOnce([]); // for STR
 
@@ -341,8 +346,60 @@ describe('SharePointController', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.conflicts.length).toBe(1);
-      expect(res.body.newFiles.length).toBe(1);
-      expect(res.body.invalidFiles.length).toBe(1);
+      // BAD/file2.dotx has an unrecognized docType — it's no longer
+      // hard-rejected into invalidFiles, it's surfaced as a reviewable row
+      // (needsDocType: true) so the dialog can let the user map it.
+      expect(res.body.newFiles.length).toBe(2);
+      expect(res.body.newFiles).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'BAD/file2.dotx', docType: '', needsDocType: true })])
+      );
+      expect(res.body.invalidFiles.length).toBe(0);
+    });
+
+    test('defaults skippedFolders to [] when the service returns none', async () => {
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [], truncated: false });
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.skippedFolders).toEqual([]);
+    });
+
+    test('echoes skippedFolders from the service in the response', async () => {
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({
+        files: [],
+        truncated: false,
+        skippedFolders: [{ relativePath: 'Denied', reason: 'Access is denied.' }],
+      });
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.skippedFolders).toEqual([{ relativePath: 'Denied', reason: 'Access is denied.' }]);
     });
 
     test('forwards timeCreated/timeLastModified onto both conflicts and newFiles entries', async () => {
@@ -362,7 +419,7 @@ describe('SharePointController', () => {
           timeLastModified: '2023-12-15T00:00:00Z',
         },
       ];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 99 }]); // conflict (size changed)
       mockGetMinioFiles.mockResolvedValueOnce([]); // STR — new
 
@@ -399,7 +456,7 @@ describe('SharePointController', () => {
 
     test('accepts STP as a valid docType (not invalid)', async () => {
       const files = [{ name: 'STP/stp-template.dotx', length: 12, docType: 'STP' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
 
       const res = buildRes();
@@ -426,7 +483,7 @@ describe('SharePointController', () => {
 
     test('accepts SYSRS as a valid docType (not invalid)', async () => {
       const files = [{ name: 'SYSRS/sysrs-template.dotx', length: 14, docType: 'SYSRS' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
 
       const res = buildRes();
@@ -453,7 +510,7 @@ describe('SharePointController', () => {
 
     test('skips identical files without conflicts or new files', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 10 }]);
 
       const res = buildRes();
@@ -539,14 +596,14 @@ describe('SharePointController', () => {
      */
     test('skips identical and uploads others', async () => {
       const files = [
-        { name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x' },
-        { name: 'STR/file2.dotx', length: 20, docType: 'STR', serverRelativeUrl: '/y' },
+        { name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x', relativePath: 'STD/file1.dotx' },
+        { name: 'STR/file2.dotx', length: 20, docType: 'STR', serverRelativeUrl: '/y', relativePath: 'STR/file2.dotx' },
       ];
       mockSvc.listTemplateFiles.mockReset();
       mockGetMinioFiles.mockReset();
       mockSvc.downloadFile.mockReset();
       // First get list
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       // Identical check calls per file
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 10 }]); // identical -> skip
       mockGetMinioFiles.mockResolvedValueOnce([]); // STR -> not identical
@@ -571,6 +628,77 @@ describe('SharePointController', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.syncedFiles).toEqual(['STR/file2.dotx']);
       expect(res.body.skippedFiles).toContain('STD/file1.dotx');
+      expect(res.body.skippedFolders).toEqual([]);
+    });
+
+    test('fails the second of two files that would collide at the same MinIO destination (duplicate basename, same docType, different source folders)', async () => {
+      // Recursion permits the same basename under two different SharePoint
+      // folders — if both map to the same docType, they'd both write to
+      // bucket/project/STD/template.dotx. Only the first should sync; the
+      // second must be reported in failedFiles, not silently overwrite it.
+      const files = [
+        { name: 'template.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/a', relativePath: 'FolderA/template.dotx' },
+        { name: 'template.dotx', length: 20, docType: 'STD', serverRelativeUrl: '/b', relativePath: 'FolderB/template.dotx' },
+      ];
+      mockSvc.listTemplateFiles.mockReset();
+      mockGetMinioFiles.mockReset();
+      mockSvc.downloadFile.mockReset();
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
+      // Identical-file check runs over both files before duplicate-destination detection.
+      mockGetMinioFiles.mockResolvedValueOnce([]); // FolderA/template.dotx
+      mockGetMinioFiles.mockResolvedValueOnce([]); // FolderB/template.dotx
+      mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd')); // only the kept (first) file downloads
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.syncedFiles).toEqual(['template.dotx']);
+      expect(mockSvc.downloadFile).toHaveBeenCalledTimes(1);
+      expect(res.body.failedFiles).toHaveLength(1);
+      expect(res.body.failedFiles[0].name).toBe('template.dotx');
+      expect(res.body.failedFiles[0].error).toContain('same destination');
+      expect(res.body.failedFiles[0].error).toContain('FolderA/template.dotx');
+    });
+
+    test('echoes skippedFolders from the service in the sync response', async () => {
+      mockSvc.listTemplateFiles.mockReset();
+      mockGetMinioFiles.mockReset();
+      mockSvc.downloadFile.mockReset();
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({
+        files: [],
+        truncated: false,
+        skippedFolders: [{ relativePath: 'Denied', reason: 'Access is denied.' }],
+      });
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            oauthToken: { accessToken: 't' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.skippedFolders).toEqual([{ relativePath: 'Denied', reason: 'Access is denied.' }]);
     });
 
     test('forwards SharePoint timeLastModified into the MinIO upload body', async () => {
@@ -583,7 +711,7 @@ describe('SharePointController', () => {
           timeLastModified: '2024-05-01T10:00:00Z',
         },
       ];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -612,7 +740,7 @@ describe('SharePointController', () => {
 
     test('uploads STP files without docType validation failure', async () => {
       const files = [{ name: 'STP/stp-template.dotx', length: 20, docType: 'STP', serverRelativeUrl: '/z' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('stp'));
 
@@ -645,7 +773,7 @@ describe('SharePointController', () => {
           serverRelativeUrl: '/sysrs',
         },
       ];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('sysrs'));
 
@@ -671,7 +799,7 @@ describe('SharePointController', () => {
 
     test('handles getMinioFiles error when checking identical', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockRejectedValueOnce(new Error('minio-check-fail'));
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -696,7 +824,7 @@ describe('SharePointController', () => {
 
     test('marks file as failed when no docType available', async () => {
       const files = [{ name: 'noDoc/file1.dotx', length: 10, docType: undefined, serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -721,7 +849,7 @@ describe('SharePointController', () => {
 
     test('marks file as failed when docType is invalid', async () => {
       const files = [{ name: 'BAD/file1.dotx', length: 10, docType: 'BAD', serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -746,7 +874,7 @@ describe('SharePointController', () => {
 
     test('records failedFiles entry when upload fails', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 

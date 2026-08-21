@@ -1,9 +1,34 @@
 import axios from 'axios';
 import logger from '../util/logger';
-import { SharePointFile, SharePointOAuthToken } from './SharePointService';
+import {
+  SharePointFile,
+  SharePointFileListing,
+  SharePointOAuthToken,
+  SkippedFolder,
+  MAX_RECURSION_DEPTH,
+  MAX_RECURSION_FILES,
+  MAX_SKIPPED_FOLDERS_RECORDED,
+  CONCURRENT_FOLDER_FETCHES,
+} from './SharePointService';
+import { withThrottleRetry, createRetryBudget, RetryBudget, RETRYABLE_STATUSES, REQUEST_TIMEOUT_MS } from './sharePointRetry';
 import { isTemplateFileName, isWithinMaxTemplateSize } from './sharePointFileValidation';
 
 const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
+
+// One BFS queue entry — a folder's "list children" URL still to walk.
+// `relativePath` is that folder's own path relative to the shared root
+// ('' at the root itself); `parentName` is undefined only at the root, so
+// files found there correctly get no docType.
+type GraphFolderQueueItem = { childrenUrl: string; relativePath: string; depth: number; parentName?: string };
+
+// Result of fetching one folder's children. `files` is populated even when
+// `skipped` is also set — mirrors SharePointService's FetchFolderResult.
+interface GraphFetchFolderResult {
+  files: SharePointFile[];
+  subfoldersToEnqueue: GraphFolderQueueItem[];
+  skipped?: { relativePath: string; reason: string };
+  depthCapped?: boolean;
+}
 
 // Hostnames a pasted "share this" link is allowed to point at. Without this,
 // pasting a non-Microsoft URL into the Online tab fails deep inside the
@@ -106,25 +131,46 @@ export class GraphSharePointService {
     return error;
   }
 
-  private async get(url: string, accessToken: string): Promise<any> {
-    try {
-      return await axios.get(url, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          // Documented specifically for /shares/...: without it, Graph may
-          // refuse to fully resolve a sharing link the caller hasn't
-          // "redeemed" before (equivalent to a user never having opened the
-          // link in a browser under this identity), surfacing as a 403 even
-          // with a token that holds sufficient Files.Read.All/Sites.Read.All
-          // scope. "IfNecessary" only grants access for this request's
-          // duration, matching what a read-only template sync needs. Sent
-          // on every call, not just /shares — Prefer is advisory HTTP, and
-          // the /sites and /drives endpoints this service also calls simply
-          // ignore a Prefer value they don't recognize.
-          Prefer: 'redeemSharingLinkIfNecessary',
-        },
-      });
-    } catch (error: any) {
+  /**
+   * `retryBudget`, when passed, is shared across every request in one
+   * `listTemplateFiles` walk — see sharePointRetry.ts's doc comment for why
+   * that matters once folder fetches run concurrently. Callers that don't
+   * pass one (testShareAccess, resolveFolderByPath's candidate-path walk,
+   * etc.) still get up to 2 retries per call, just not budget-capped across
+   * calls — acceptable since only genuine 429/503 responses are retryable,
+   * never the 404s that walk expects from a wrong candidate.
+   */
+  private async get(url: string, accessToken: string, retryBudget?: RetryBudget): Promise<any> {
+    return withThrottleRetry(
+      () =>
+        axios.get(url, {
+          timeout: REQUEST_TIMEOUT_MS,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            // Documented specifically for /shares/...: without it, Graph may
+            // refuse to fully resolve a sharing link the caller hasn't
+            // "redeemed" before (equivalent to a user never having opened the
+            // link in a browser under this identity), surfacing as a 403 even
+            // with a token that holds sufficient Files.Read.All/Sites.Read.All
+            // scope. "IfNecessary" only grants access for this request's
+            // duration, matching what a read-only template sync needs. Sent
+            // on every call, not just /shares — Prefer is advisory HTTP, and
+            // the /sites and /drives endpoints this service also calls simply
+            // ignore a Prefer value they don't recognize.
+            Prefer: 'redeemSharingLinkIfNecessary',
+          },
+        }),
+      (outcome) => {
+        const status = outcome.error?.response?.status;
+        return {
+          retryable: RETRYABLE_STATUSES.includes(status),
+          // Read Retry-After BEFORE errorForStatus() maps the error below —
+          // that mapping discards the original response/headers entirely.
+          retryAfter: outcome.error?.response?.headers?.['retry-after'],
+        };
+      },
+      { budget: retryBudget, label: url }
+    ).catch((error: any) => {
       if (error.response) {
         // Never log the token; the URL itself carries no secret (Graph
         // resource paths, not signed download URLs) so it's safe to log for
@@ -133,7 +179,7 @@ export class GraphSharePointService {
         throw this.errorForStatus(error.response.status);
       }
       throw new Error(`Could not reach Microsoft Graph: ${error.message}`);
-    }
+    });
   }
 
   private isPrivateHost(hostname: string): boolean {
@@ -264,11 +310,11 @@ export class GraphSharePointService {
    * Follows @odata.nextLink so libraries over the 200-item Graph page size
    * are still fully listed.
    */
-  private async listChildren(url: string, accessToken: string): Promise<any[]> {
+  private async listChildren(url: string, accessToken: string, retryBudget?: RetryBudget): Promise<any[]> {
     const items: any[] = [];
     let nextUrl: string | undefined = url;
     while (nextUrl) {
-      const response = await this.get(nextUrl, accessToken);
+      const response = await this.get(nextUrl, accessToken, retryBudget);
       items.push(...(response.data.value || []));
       nextUrl = response.data['@odata.nextLink'];
     }
@@ -276,65 +322,173 @@ export class GraphSharePointService {
   }
 
   /**
-   * Lists all Word template files one level below the shared folder's
-   * subfolders. Same docType convention as the on-prem path: each
-   * subfolder's name becomes the docType, and only .docx/.dotx files are
-   * returned. Emits the same SharePointFile shape the on-prem path uses —
-   * `serverRelativeUrl` carries Graph's pre-signed download URL instead of a
-   * server-relative path, which is exactly what downloadFile() expects back.
+   * Lists all Word template files under the shared folder, recursively —
+   * including files sitting directly in the shared folder itself (a flat
+   * folder, no per-doc-type subfolders) and files nested more than one
+   * level deep. Same docType convention as the on-prem path: a file's
+   * immediate parent folder name becomes its docType, undefined at the
+   * shared-folder root. Mirrors `SharePointService.listTemplateFiles`'s
+   * BFS walk and safety caps, built on `listChildren`'s existing
+   * `@odata.nextLink` pagination instead of the one-level `/Folders`+`/Files`
+   * pair the on-prem path uses. Emits the same SharePointFile shape the
+   * on-prem path uses — `serverRelativeUrl` carries Graph's pre-signed
+   * download URL instead of a server-relative path, which is exactly what
+   * downloadFile() expects back.
    */
-  async listTemplateFiles(shareUrl: string, token: SharePointOAuthToken): Promise<SharePointFile[]> {
+  async listTemplateFiles(shareUrl: string, token: SharePointOAuthToken): Promise<SharePointFileListing> {
     const rootChildrenUrl = await this.resolveRootChildrenUrl(shareUrl, token.accessToken);
-    const subfolders = await this.listChildren(rootChildrenUrl, token.accessToken);
+
+    const queue: GraphFolderQueueItem[] = [{ childrenUrl: rootChildrenUrl, relativePath: '', depth: 0 }];
 
     const allTemplateFiles: SharePointFile[] = [];
+    let truncated = false;
+    // Shared across every request this walk makes — see sharePointRetry.ts.
+    const retryBudget = createRetryBudget();
+    const skippedFolders: SkippedFolder[] = [];
+    let totalSkippedFolders = 0;
 
+    // Mirrors SharePointService.listTemplateFiles's recordSkippedFolder —
+    // `depth > 0` gates tolerance, a denied shared-folder root always
+    // aborts (see SharePointFileListing's doc comment).
+    const recordSkippedFolder = (relPath: string, reason: string) => {
+      totalSkippedFolders += 1;
+      if (skippedFolders.length < MAX_SKIPPED_FOLDERS_RECORDED) {
+        skippedFolders.push({ relativePath: relPath, reason });
+      }
+    };
+
+    // Batch fetches (I/O only), accumulate strictly in queue order — see
+    // SharePointService.listTemplateFiles's identical comment for why this
+    // keeps output deterministic under concurrency.
+    while (queue.length > 0 && !truncated) {
+      const batch = queue.splice(0, CONCURRENT_FOLDER_FETCHES);
+      const results = await Promise.all(batch.map((item) => this.fetchFolder(token, item, retryBudget)));
+
+      for (const result of results) {
+        if (truncated) break;
+
+        for (const file of result.files) {
+          if (allTemplateFiles.length >= MAX_RECURSION_FILES) {
+            truncated = true;
+            break;
+          }
+          allTemplateFiles.push(file);
+        }
+        if (truncated) break;
+
+        if (result.skipped) {
+          recordSkippedFolder(result.skipped.relativePath, result.skipped.reason);
+          continue;
+        }
+        if (result.depthCapped) {
+          truncated = true;
+          continue;
+        }
+        queue.push(...result.subfoldersToEnqueue);
+      }
+    }
+
+    if (totalSkippedFolders > skippedFolders.length) {
+      skippedFolders.push({
+        relativePath: '',
+        reason: `…and ${totalSkippedFolders - skippedFolders.length} more folder(s) were also skipped`,
+      });
+    }
+
+    logger.info(
+      `Total template files found via Graph: ${allTemplateFiles.length}${truncated ? ' (truncated)' : ''}${
+        totalSkippedFolders ? `, ${totalSkippedFolders} folder(s) skipped (access denied)` : ''
+      }`
+    );
+
+    return { files: allTemplateFiles, truncated, skippedFolders };
+  }
+
+  /**
+   * Fetches one folder's children — the I/O unit `listTemplateFiles` runs
+   * CONCURRENT_FOLDER_FETCHES of at a time. Pure I/O, mirrors
+   * SharePointService.fetchFolder: no shared state is read or written
+   * here, so concurrent fetching can't change which files end up in the
+   * result or where the truncation cutoff falls (both are resolved by the
+   * caller, in queue order, once every promise in a batch has settled).
+   */
+  private async fetchFolder(
+    token: SharePointOAuthToken,
+    item: GraphFolderQueueItem,
+    retryBudget: RetryBudget
+  ): Promise<GraphFetchFolderResult> {
+    const { childrenUrl, relativePath, depth, parentName } = item;
+
+    let children: any[];
+    try {
+      children = await this.listChildren(childrenUrl, token.accessToken, retryBudget);
+    } catch (err: any) {
+      if (err.status === 403 && depth > 0) {
+        logger.warn(`Skipping inaccessible folder "${relativePath}" (Graph): ${err.message}`);
+        return { files: [], subfoldersToEnqueue: [], skipped: { relativePath, reason: err.message } };
+      }
+      throw err;
+    }
+
+    const templateFiles = children.filter((file: any) => {
+      if (file.folder) return false;
+      if (!isTemplateFileName(file.name)) return false;
+      if (!isWithinMaxTemplateSize(Number(file.size))) {
+        logger.warn(`Skipping SharePoint file "${file.name}" — size ${file.size} bytes exceeds the sync limit`);
+        return false;
+      }
+      return true;
+    });
+
+    const files: SharePointFile[] = [];
+    for (const file of templateFiles) {
+      const downloadUrl = file['@microsoft.graph.downloadUrl'];
+      if (!downloadUrl) {
+        logger.warn(`Skipping SharePoint file "${file.name}" — Graph did not return a download URL`);
+        continue;
+      }
+      files.push({
+        name: file.name,
+        serverRelativeUrl: downloadUrl,
+        timeCreated: file.createdDateTime,
+        timeLastModified: file.lastModifiedDateTime,
+        length: file.size,
+        docType: parentName,
+        relativePath: relativePath ? `${relativePath}/${file.name}` : file.name,
+      });
+    }
+
+    logger.info(`Found ${templateFiles.length} template files in "${relativePath || '(root)'}" (Graph)`);
+
+    const subfolders = children.filter((c: any) => c.folder && !c.name.startsWith('_') && !c.name.startsWith('.'));
+
+    if (depth >= MAX_RECURSION_DEPTH) {
+      if (subfolders.length > 0) {
+        logger.warn(
+          `Hit max recursion depth (${MAX_RECURSION_DEPTH}) at "${relativePath}" with ${subfolders.length} unexplored subfolder(s) (Graph)`
+        );
+        return { files, subfoldersToEnqueue: [], depthCapped: true };
+      }
+      return { files, subfoldersToEnqueue: [] };
+    }
+
+    const subfoldersToEnqueue: GraphFolderQueueItem[] = [];
     for (const subfolder of subfolders) {
-      if (!subfolder.folder) continue; // only folders are docType buckets
-
       const subfolderName = subfolder.name;
-      if (subfolderName.startsWith('_') || subfolderName.startsWith('.')) continue;
-
       const driveId = subfolder.parentReference?.driveId;
       const itemId = subfolder.id;
       if (!driveId || !itemId) {
         logger.warn(`Skipping SharePoint subfolder "${subfolderName}" — missing driveId/itemId in Graph response`);
         continue;
       }
-
-      const children = await this.listChildren(`${GRAPH_BASE_URL}/drives/${driveId}/items/${itemId}/children`, token.accessToken);
-
-      const templateFiles = children.filter((file: any) => {
-        if (file.folder) return false;
-        if (!isTemplateFileName(file.name)) return false;
-        if (!isWithinMaxTemplateSize(Number(file.size))) {
-          logger.warn(`Skipping SharePoint file "${file.name}" — size ${file.size} bytes exceeds the sync limit`);
-          return false;
-        }
-        return true;
+      subfoldersToEnqueue.push({
+        childrenUrl: `${GRAPH_BASE_URL}/drives/${driveId}/items/${itemId}/children`,
+        relativePath: relativePath ? `${relativePath}/${subfolderName}` : subfolderName,
+        depth: depth + 1,
+        parentName: subfolderName,
       });
-
-      for (const file of templateFiles) {
-        const downloadUrl = file['@microsoft.graph.downloadUrl'];
-        if (!downloadUrl) {
-          logger.warn(`Skipping SharePoint file "${file.name}" — Graph did not return a download URL`);
-          continue;
-        }
-        allTemplateFiles.push({
-          name: file.name,
-          serverRelativeUrl: downloadUrl,
-          timeCreated: file.createdDateTime,
-          timeLastModified: file.lastModifiedDateTime,
-          length: file.size,
-          docType: subfolderName,
-        });
-      }
-
-      logger.info(`Found ${templateFiles.length} template files in "${subfolderName}" (Graph)`);
     }
 
-    logger.info(`Total template files found via Graph: ${allTemplateFiles.length}`);
-
-    return allTemplateFiles;
+    return { files, subfoldersToEnqueue };
   }
 }

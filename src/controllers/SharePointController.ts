@@ -95,9 +95,12 @@ export class SharePointController {
 
       const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
-      const files = await this.sharePointService.listTemplateFiles(config, auth);
+      const { files, truncated, skippedFolders = [] } = await this.sharePointService.listTemplateFiles(config, auth);
+      if (skippedFolders.length > 0) {
+        logger.warn(`Skipped ${skippedFolders.length} inaccessible folder(s) while listing files`);
+      }
 
-      res.status(200).json({ success: true, files });
+      res.status(200).json({ success: true, files, truncated, skippedFolders });
     } catch (error: any) {
       logger.error(`List files error: ${error.message}`);
       res.status(error.status || 500).json({ success: false, message: error.message });
@@ -111,7 +114,7 @@ export class SharePointController {
    */
   public async checkConflicts(req: Request, res: Response): Promise<void> {
     try {
-      const { siteUrl, library, folder, credentials, oauthToken, bucketName, projectName, docType } =
+      const { siteUrl, library, folder, credentials, oauthToken, bucketName, projectName, docType, docTypeOverrides } =
         req.body;
 
       if (
@@ -138,9 +141,17 @@ export class SharePointController {
       const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
 
-      // Get files from SharePoint (includes docType from subfolder names)
-      const spFiles = await this.sharePointService.listTemplateFiles(config, auth);
-      logger.info(`Checking ${spFiles.length} SharePoint files for conflicts`);
+      // Get files from SharePoint, recursively (includes docType from the
+      // immediate parent folder name, when there is one)
+      const {
+        files: spFiles,
+        truncated,
+        skippedFolders = [],
+      } = await this.sharePointService.listTemplateFiles(config, auth);
+      logger.info(`Checking ${spFiles.length} SharePoint files for conflicts${truncated ? ' (listing truncated)' : ''}`);
+      if (skippedFolders.length > 0) {
+        logger.warn(`Skipped ${skippedFolders.length} inaccessible folder(s) while checking conflicts`);
+      }
 
       // Group files by docType for conflict checking
       const conflicts: any[] = [];
@@ -148,15 +159,22 @@ export class SharePointController {
       const invalidFiles: any[] = [];
 
       for (const spFile of spFiles) {
-        const targetDocType = spFile.docType || docType || '';
+        const targetDocType = docTypeOverrides?.[spFile.relativePath] || spFile.docType || docType || '';
 
-        // Skip files with invalid docType
+        // A file with no auto-detected (or already-invalid) docType is no
+        // longer hard-rejected here — it's surfaced as a reviewable row
+        // with an empty docType so the review dialog can let the user
+        // manually assign one via a per-row selector. `invalidFiles` is
+        // kept for defensive symmetry but should rarely populate now.
         if (!targetDocType || !isValidTemplateDocType(targetDocType)) {
-          invalidFiles.push({
+          newFiles.push({
             name: spFile.name,
+            relativePath: spFile.relativePath,
             size: spFile.length,
-            docType: targetDocType || 'none',
-            error: `Invalid docType "${targetDocType}". Valid types are: ${VALID_TEMPLATE_DOC_TYPES.join(', ')}`,
+            docType: '',
+            timeCreated: spFile.timeCreated,
+            timeLastModified: spFile.timeLastModified,
+            needsDocType: true,
           });
           continue;
         }
@@ -192,6 +210,7 @@ export class SharePointController {
 
             conflicts.push({
               name: spFile.name,
+              relativePath: spFile.relativePath,
               size: spFile.length,
               docType: targetDocType,
               timeCreated: spFile.timeCreated,
@@ -209,6 +228,7 @@ export class SharePointController {
 
           newFiles.push({
             name: spFile.name,
+            relativePath: spFile.relativePath,
             size: spFile.length,
             docType: targetDocType,
             timeCreated: spFile.timeCreated,
@@ -227,6 +247,8 @@ export class SharePointController {
         conflicts,
         newFiles,
         invalidFiles,
+        truncated,
+        skippedFolders,
       });
     } catch (error: any) {
       logger.error(`Check conflicts error: ${error.message}`);
@@ -251,6 +273,7 @@ export class SharePointController {
         projectName,
         docType,
         skipFiles,
+        docTypeOverrides,
       } = req.body;
 
       if (
@@ -277,16 +300,28 @@ export class SharePointController {
       const config: SharePointConfigType = { siteUrl, library, folder };
       const auth = oauthToken || credentials;
 
-      // Get all template files from SharePoint
-      const allFiles = await this.sharePointService.listTemplateFiles(config, auth);
+      // Get all template files from SharePoint, recursively
+      const {
+        files: allFiles,
+        truncated,
+        skippedFolders = [],
+      } = await this.sharePointService.listTemplateFiles(config, auth);
+      if (truncated) {
+        logger.warn('SharePoint template listing was truncated (depth/count cap) — syncing only what was listed');
+      }
+      if (skippedFolders.length > 0) {
+        logger.warn(`Skipped ${skippedFolders.length} inaccessible folder(s) while syncing templates`);
+      }
 
-      // Filter out files user wants to skip (from conflict dialog)
-      let filesToSync = allFiles.filter((f) => !skipFiles || !skipFiles.includes(f.name));
+      // Filter out files user wants to skip (from conflict dialog). Keyed by
+      // relativePath, not name — recursion permits duplicate basenames in
+      // different folders, which a name-only key can't tell apart.
+      let filesToSync = allFiles.filter((f) => !skipFiles || !skipFiles.includes(f.relativePath));
 
       // Also skip identical files (same size as existing files in MinIO)
-      const identicalFiles: string[] = [];
+      const identicalFiles: string[] = []; // relativePaths
       for (const file of filesToSync) {
-        const targetDocType = file.docType || docType || '';
+        const targetDocType = docTypeOverrides?.[file.relativePath] || file.docType || docType || '';
         if (!targetDocType) continue;
 
         try {
@@ -305,7 +340,7 @@ export class SharePointController {
 
           if (existingFile && Number(existingFile.size) === Number(file.length)) {
             // Identical file - skip it
-            identicalFiles.push(file.name);
+            identicalFiles.push(file.relativePath);
             logger.debug(`Skipping identical: ${file.name} (size: ${file.length})`);
           }
         } catch (error) {
@@ -314,12 +349,49 @@ export class SharePointController {
       }
 
       // Remove identical files from sync list
-      filesToSync = filesToSync.filter((f) => !identicalFiles.includes(f.name));
+      filesToSync = filesToSync.filter((f) => !identicalFiles.includes(f.relativePath));
+
+      // Recursion permits duplicate basenames living in different
+      // SharePoint folders (e.g. "STD-template.dotx" under two different
+      // subfolders) — the MinIO destination is only bucket/project/docType/
+      // <basename>, not relativePath, so two files manually mapped (or
+      // bulk-assigned from the review dialog) to the same docType would
+      // silently overwrite each other with no indication anything was
+      // lost. Detect this before any download/upload happens: keep the
+      // first file for each destination, fail the rest with a clear reason
+      // instead of a silent overwrite.
+      const destinationKeyOf = (file: (typeof filesToSync)[number]) => {
+        const targetDocType = docTypeOverrides?.[file.relativePath] || file.docType || docType || '';
+        const baseName = file.name.split('/').pop() || file.name;
+        return `${targetDocType}/${baseName}`;
+      };
+      const seenDestinations = new Map<string, string>(); // destinationKey -> first file's relativePath
+      const duplicateDestinationPaths = new Set<string>();
+      const duplicateDestinationFiles: { name: string; error: string }[] = [];
+      for (const file of filesToSync) {
+        const key = destinationKeyOf(file);
+        const firstRelativePath = seenDestinations.get(key);
+        if (firstRelativePath) {
+          duplicateDestinationPaths.add(file.relativePath);
+          duplicateDestinationFiles.push({
+            name: file.name,
+            error: `Skipped — another file ("${firstRelativePath}") also maps to the same destination (${key}); only the first is synced. Map these to different document types, or rename one, to sync both.`,
+          });
+        } else {
+          seenDestinations.set(key, file.relativePath);
+        }
+      }
+      if (duplicateDestinationPaths.size > 0) {
+        filesToSync = filesToSync.filter((f) => !duplicateDestinationPaths.has(f.relativePath));
+        logger.warn(
+          `${duplicateDestinationFiles.length} file(s) skipped — duplicate destination after docType mapping`
+        );
+      }
 
       logger.info(
         `Syncing ${filesToSync.length} files from SharePoint to MinIO (user skipped: ${
           skipFiles?.length || 0
-        }, identical: ${identicalFiles.length})`
+        }, identical: ${identicalFiles.length}, duplicate destination: ${duplicateDestinationFiles.length})`
       );
 
       const syncResults = {
@@ -328,7 +400,9 @@ export class SharePointController {
         syncedFiles: [] as string[],
         skippedFiles: [...(skipFiles || []), ...identicalFiles],
         identicalFiles,
-        failedFiles: [] as { name: string; error: string }[],
+        failedFiles: [...duplicateDestinationFiles] as { name: string; error: string }[],
+        truncated,
+        skippedFolders,
       };
 
       // Sync each file
@@ -337,8 +411,10 @@ export class SharePointController {
           // Download file from SharePoint
           const fileBuffer = await this.sharePointService.downloadFile(siteUrl, file.serverRelativeUrl, auth);
 
-          // Use docType from file (subfolder name) or fallback to request docType
-          const targetDocType = file.docType || docType || '';
+          // Manually-assigned type (from the review dialog's per-row
+          // selector) wins over auto-detection from the parent folder name,
+          // which in turn wins over the request-level fallback docType.
+          const targetDocType = docTypeOverrides?.[file.relativePath] || file.docType || docType || '';
 
           logger.info(
             `File: ${file.name}, docType from file: ${file.docType}, final docType: ${targetDocType}`

@@ -110,8 +110,9 @@ describe('GraphSharePointService', () => {
         });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(allItemsUrl, token);
+      const { files, truncated } = await service.listTemplateFiles(allItemsUrl, token);
 
+      expect(truncated).toBe(false);
       expect(files).toEqual([
         {
           name: 'SVD-template.docx',
@@ -120,6 +121,7 @@ describe('GraphSharePointService', () => {
           timeLastModified: '2024-01-01T00:00:00Z',
           length: 1234,
           docType: 'SVD',
+          relativePath: 'SVD/SVD-template.docx',
         },
       ]);
 
@@ -207,6 +209,7 @@ describe('GraphSharePointService', () => {
       expect(mockedAxios.get).toHaveBeenCalledWith(
         expect.stringMatching(/^https:\/\/graph\.microsoft\.com\/v1\.0\/shares\/u!/),
         {
+          timeout: 15000,
           headers: {
             Authorization: `Bearer ${token.accessToken}`,
             Prefer: 'redeemSharingLinkIfNecessary',
@@ -273,6 +276,75 @@ describe('GraphSharePointService', () => {
     });
   });
 
+  describe('get() throttle retry', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    // Drives fake timers forward while withThrottleRetry is awaiting sleep().
+    async function flushRetries() {
+      for (let i = 0; i < 5; i++) {
+        await Promise.resolve();
+        jest.runAllTimers();
+      }
+    }
+
+    test('retries a thrown 429 and succeeds on the next attempt', async () => {
+      const throttled: any = new Error('Too Many Requests');
+      throttled.response = { status: 429, headers: { 'retry-after': '1' } };
+      mockedAxios.get.mockRejectedValueOnce(throttled).mockResolvedValueOnce({ data: { id: 'item1' } });
+
+      const service = new GraphSharePointService();
+      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', 'tok');
+      await flushRetries();
+      const result = await promise;
+
+      expect(result).toEqual({ data: { id: 'item1' } });
+      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not retry a 403 (a real permission error, not throttling) — maps it immediately', async () => {
+      const denied: any = new Error('Forbidden');
+      denied.response = { status: 403, headers: {} };
+      mockedAxios.get.mockRejectedValue(denied);
+
+      const service = new GraphSharePointService();
+      await expect((service as any).get('https://graph.microsoft.com/v1.0/x', 'tok')).rejects.toThrow(
+        'This token does not have permission to read this SharePoint folder'
+      );
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    });
+
+    test('gives up after retries are exhausted and still maps to the documented error message', async () => {
+      const throttled: any = new Error('Server Too Busy');
+      throttled.response = { status: 503, headers: {} };
+      mockedAxios.get.mockRejectedValue(throttled);
+
+      const service = new GraphSharePointService();
+      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', 'tok');
+      await flushRetries();
+
+      await expect(promise).rejects.toThrow('Microsoft Graph error: 503');
+      expect(mockedAxios.get.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    test('defaults a request timeout when calling axios', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: {} });
+
+      const service = new GraphSharePointService();
+      await (service as any).get('https://graph.microsoft.com/v1.0/x', 'tok');
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'https://graph.microsoft.com/v1.0/x',
+        expect.objectContaining({ timeout: 15000 })
+      );
+    });
+  });
+
   describe('listTemplateFiles', () => {
     test('descends into folder children, filters .docx/.dotx, and tags each file with its parent folder as docType', async () => {
       mockedAxios.get
@@ -332,8 +404,9 @@ describe('GraphSharePointService', () => {
         });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(shareUrl, token);
+      const { files, truncated } = await service.listTemplateFiles(shareUrl, token);
 
+      expect(truncated).toBe(false);
       expect(files).toEqual([
         {
           name: 'SVD-template.docx',
@@ -342,10 +415,12 @@ describe('GraphSharePointService', () => {
           timeLastModified: '2024-01-01T00:00:00Z',
           length: 1234,
           docType: 'SVD',
+          relativePath: 'SVD/SVD-template.docx',
         },
       ]);
-      // Only 2 calls: root children + SVD's children. _hidden and the plain
-      // file at the root must not trigger extra requests.
+      // Only 2 calls: root children + SVD's children. _hidden, the plain
+      // file at the root, and the driveId-less nested subfolder must not
+      // trigger extra requests.
       expect(mockedAxios.get).toHaveBeenCalledTimes(2);
     });
 
@@ -388,7 +463,7 @@ describe('GraphSharePointService', () => {
         });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(shareUrl, token);
+      const { files } = await service.listTemplateFiles(shareUrl, token);
 
       expect(files).toHaveLength(1);
       expect(files[0].docType).toBe('STD');
@@ -397,6 +472,66 @@ describe('GraphSharePointService', () => {
         'https://graph.microsoft.com/v1.0/next-page',
         expect.anything()
       );
+    });
+
+    // A3: the BFS walk now fetches CONCURRENT_FOLDER_FETCHES folders at a
+    // time instead of one at a time. Uses mockImplementation keyed on the
+    // actual URL requested (not a fixed mockResolvedValueOnce queue) so the
+    // assertions hold regardless of which order the concurrent fetches
+    // actually settle in.
+    test('processes a wide batch of subfolders concurrently with deterministic, correctly-associated output', async () => {
+      const subfolderNames = ['F0', 'F1', 'F2', 'F3', 'F4', 'F5']; // 6 — spans 2 batches at CONCURRENT_FOLDER_FETCHES=4
+
+      mockedAxios.get.mockImplementation(async (url: string) => {
+        if (url.includes('/shares/')) {
+          return {
+            data: {
+              value: subfolderNames.map((name) => ({
+                id: `folder-${name}`,
+                name,
+                folder: {},
+                parentReference: { driveId: 'drive1' },
+              })),
+            },
+          };
+        }
+        for (const name of subfolderNames) {
+          if (url === `https://graph.microsoft.com/v1.0/drives/drive1/items/folder-${name}/children`) {
+            return {
+              data: {
+                value: [
+                  {
+                    id: `item-${name}`,
+                    name: `${name}-template.docx`,
+                    file: {},
+                    size: 10,
+                    lastModifiedDateTime: '2024-01-01T00:00:00Z',
+                    '@microsoft.graph.downloadUrl': `https://download.example/${name}`,
+                  },
+                ],
+              },
+            };
+          }
+        }
+        throw new Error(`Unexpected URL in test: ${url}`);
+      });
+
+      const service = new GraphSharePointService();
+      const { files, truncated } = await service.listTemplateFiles(shareUrl, token);
+
+      expect(truncated).toBe(false);
+      expect(files).toHaveLength(6);
+      // Deterministic: output must follow original queue (BFS) order, not
+      // whatever order the concurrent batch happened to settle in.
+      expect(files.map((f) => f.relativePath)).toEqual([
+        'F0/F0-template.docx',
+        'F1/F1-template.docx',
+        'F2/F2-template.docx',
+        'F3/F3-template.docx',
+        'F4/F4-template.docx',
+        'F5/F5-template.docx',
+      ]);
+      files.forEach((f, i) => expect(f.docType).toBe(subfolderNames[i]));
     });
 
     test('skips a file with no @microsoft.graph.downloadUrl rather than crashing', async () => {
@@ -413,7 +548,7 @@ describe('GraphSharePointService', () => {
         });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(shareUrl, token);
+      const { files } = await service.listTemplateFiles(shareUrl, token);
 
       expect(files).toEqual([]);
     });
@@ -441,7 +576,7 @@ describe('GraphSharePointService', () => {
         });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(shareUrl, token);
+      const { files } = await service.listTemplateFiles(shareUrl, token);
 
       expect(files).toEqual([]);
     });
@@ -469,7 +604,7 @@ describe('GraphSharePointService', () => {
         });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(shareUrl, token);
+      const { files } = await service.listTemplateFiles(shareUrl, token);
 
       expect(files).toEqual([]);
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -483,10 +618,71 @@ describe('GraphSharePointService', () => {
       });
 
       const service = new GraphSharePointService();
-      const files = await service.listTemplateFiles(shareUrl, token);
+      const { files } = await service.listTemplateFiles(shareUrl, token);
 
       expect(files).toEqual([]);
       expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    });
+
+    test('skips a permission-denied subfolder (403) and keeps files already found elsewhere', async () => {
+      mockedAxios.get
+        // root children -> two subfolders
+        .mockResolvedValueOnce({
+          data: {
+            value: [
+              { id: 'folder-svd', name: 'SVD', folder: {}, parentReference: { driveId: 'drive1' } },
+              { id: 'folder-denied', name: 'Denied', folder: {}, parentReference: { driveId: 'drive1' } },
+            ],
+          },
+        })
+        // SVD's children -> one valid file
+        .mockResolvedValueOnce({
+          data: {
+            value: [
+              {
+                id: 'item1',
+                name: 'SVD-template.docx',
+                file: {},
+                size: 10,
+                lastModifiedDateTime: '2024-01-01T00:00:00Z',
+                '@microsoft.graph.downloadUrl': 'https://download.example/1',
+              },
+            ],
+          },
+        })
+        // Denied's children -> 403
+        .mockRejectedValueOnce({ response: { status: 403, headers: {} } });
+
+      const service = new GraphSharePointService();
+      const { files, skippedFolders } = await service.listTemplateFiles(shareUrl, token);
+
+      expect(files).toHaveLength(1);
+      expect(files[0].docType).toBe('SVD');
+      expect(skippedFolders).toEqual([
+        { relativePath: 'Denied', reason: 'This token does not have permission to read this SharePoint folder' },
+      ]);
+    });
+
+    test('a 401 is never tolerated — stays fatal even on a subfolder', async () => {
+      mockedAxios.get
+        .mockResolvedValueOnce({
+          data: { value: [{ id: 'folder-svd', name: 'SVD', folder: {}, parentReference: { driveId: 'drive1' } }] },
+        })
+        .mockRejectedValueOnce({ response: { status: 401, headers: {} } });
+
+      const service = new GraphSharePointService();
+      await expect(service.listTemplateFiles(shareUrl, token)).rejects.toThrow(
+        'Graph access token expired or invalid — paste a fresh one'
+      );
+    });
+
+    test('a denied shared-folder root (depth 0) always aborts, never skips', async () => {
+      mockedAxios.get.mockRejectedValueOnce({ response: { status: 403, headers: {} } });
+
+      const service = new GraphSharePointService();
+      await expect(service.listTemplateFiles(shareUrl, token)).rejects.toThrow(
+        'This token does not have permission to read this SharePoint folder'
+      );
     });
   });
 
