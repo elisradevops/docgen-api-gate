@@ -12,8 +12,21 @@ import {
 } from './SharePointService';
 import { withThrottleRetry, createRetryBudget, RetryBudget, RETRYABLE_STATUSES, REQUEST_TIMEOUT_MS } from './sharePointRetry';
 import { isTemplateFileName, isWithinMaxTemplateSize } from './sharePointFileValidation';
+import { assertGraphApiUrl, assertDownloadUrl } from '../util/graphUrlGuard';
+import { GraphTokenProvider } from './auth/MsalClientService';
 
 const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
+
+// Accepts a plain { accessToken } object or a GraphTokenProvider closure
+// (which re-acquires per call — see MsalClientService.createTokenProvider
+// for why that matters on a long-running sync). Normalized to a provider
+// internally so the rest of this class deals with one shape.
+export type TokenSource = SharePointOAuthToken | GraphTokenProvider;
+
+function toTokenProvider(source: TokenSource): GraphTokenProvider {
+  if (typeof source === 'function') return source;
+  return async () => source.accessToken;
+}
 
 // One BFS queue entry — a folder's "list children" URL still to walk.
 // `relativePath` is that folder's own path relative to the shared root
@@ -49,52 +62,12 @@ function isMicrosoftSharingUrl(url: string): boolean {
 }
 
 /**
- * Two distinct URL shapes reach this code in practice:
- *
- *  1. A "Copy Link" sharing URL (what SharePoint's Share dialog issues),
- *     e.g. https://tenant.sharepoint.com/:f:/r/teams/x/Shared Documents/y?d=<id>&...
- *     Graph's /shares endpoint is Microsoft's documented mechanism for
- *     resolving exactly this kind of token-bearing sharing URL directly to
- *     a driveItem.
- *
- *  2. A plain browsed-folder address-bar URL — what a user gets by
- *     navigating into the folder and copying the URL, NOT clicking "Copy
- *     Link". This is actually the far more common case in practice. Its
- *     shape is a library view page (.../Forms/AllItems.aspx) with the real
- *     folder identified by a `?...&id=<url-encoded-server-relative-path>`
- *     query parameter that SharePoint's page script reads client-side —
- *     Graph has no built-in understanding of this `id=` convention, and
- *     resolving the *page* URL via /shares would likely resolve to the
- *     library root or the page itself, not the nested folder — a silent
- *     wrong-target risk, worse than an outright error.
- *
- * This distinguishes the two by checking for a path-shaped `id` query
- * parameter, and returns the decoded server-relative folder path for shape
- * 2 so callers can resolve it via site-path walking instead of /shares.
- */
-function parseAllItemsFolderPath(url: string): { hostname: string; folderPath: string } | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  const idParam = parsed.searchParams.get('id');
-  if (!idParam || !idParam.startsWith('/')) return null;
-  return { hostname: parsed.hostname, folderPath: decodeURIComponent(idParam) };
-}
-
-/**
- * Reads a SharePoint/OneDrive folder from a user-pasted URL, using a bearer
- * token supplied by the caller (e.g. pasted from Graph Explorer). Accepts
- * two distinct URL shapes a user might actually paste — see
- * parseAllItemsFolderPath's doc comment for why they need different
- * resolution paths:
- *  - a "Copy Link" sharing URL, resolved via Graph's /shares endpoint
- *    (mirrors the pattern already proven in req2ado's graph_client.py)
- *  - a plain browsed-folder address-bar URL, resolved by walking the
- *    server-relative path to find its site, then addressing the remaining
- *    path within that site's default drive
+ * Reads a SharePoint/OneDrive folder from a user-pasted URL via Microsoft
+ * Graph's /shares endpoint — the single resolution path for both URL shapes
+ * a user might paste ("Copy Link" sharing URLs and plain browsed-folder
+ * address-bar URLs), both resolvable under delegated Files.Read.All alone.
+ * There is deliberately no /sites/{hostname}:/{path} fallback, since that
+ * path requires Sites.Read.All, which this app does not request.
  */
 export class GraphSharePointService {
   /**
@@ -102,7 +75,7 @@ export class GraphSharePointService {
    * expects: "u!" + unpadded base64url(url). See:
    * https://learn.microsoft.com/graph/api/shares-get
    *
-   * Single choke point for both public methods below — validates the URL is
+   * Single choke point for every public method below — validates the URL is
    * actually a Microsoft SharePoint/OneDrive link *before* any network call,
    * rather than letting a mispasted URL fail deep inside the Graph request.
    */
@@ -119,8 +92,8 @@ export class GraphSharePointService {
 
   private errorForStatus(status: number): Error {
     const messages: Record<number, string> = {
-      401: 'Graph access token expired or invalid — paste a fresh one',
-      403: 'This token does not have permission to read this SharePoint folder',
+      401: 'Graph access token expired or invalid — please sign in again',
+      403: 'This account does not have permission to read this SharePoint folder',
       404: 'SharePoint folder not found for this sharing link',
     };
     // Carry the real status through so callers can respond 4xx (an expired
@@ -133,33 +106,29 @@ export class GraphSharePointService {
 
   /**
    * `retryBudget`, when passed, is shared across every request in one
-   * `listTemplateFiles` walk — see sharePointRetry.ts's doc comment for why
-   * that matters once folder fetches run concurrently. Callers that don't
-   * pass one (testShareAccess, resolveFolderByPath's candidate-path walk,
-   * etc.) still get up to 2 retries per call, just not budget-capped across
-   * calls — acceptable since only genuine 429/503 responses are retryable,
-   * never the 404s that walk expects from a wrong candidate.
+   * `listTemplateFiles` walk (see sharePointRetry.ts for why that matters
+   * once folder fetches run concurrently). Callers that don't pass one
+   * still get up to 2 retries per call, just not budget-capped across calls.
+   *
+   * `tokenProvider` is invoked on every call, not cached here — lets a
+   * MsalClientService.createTokenProvider-backed caller silently refresh
+   * mid-walk instead of reusing one token across a download loop that can
+   * outlive its 60-90 minute lifetime.
+   *
+   * No `Prefer: redeemSharingLinkIfNecessary` header is sent — redeeming a
+   * sharing link is a permission-granting side effect, and this app must
+   * stay read-only in effect, not just in the scopes it holds.
+   * Files.Read.All alone resolves /shares without it.
    */
-  private async get(url: string, accessToken: string, retryBudget?: RetryBudget): Promise<any> {
+  private async get(url: string, tokenProvider: GraphTokenProvider, retryBudget?: RetryBudget): Promise<any> {
     return withThrottleRetry(
-      () =>
-        axios.get(url, {
+      async () => {
+        const accessToken = await tokenProvider();
+        return axios.get(url, {
           timeout: REQUEST_TIMEOUT_MS,
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            // Documented specifically for /shares/...: without it, Graph may
-            // refuse to fully resolve a sharing link the caller hasn't
-            // "redeemed" before (equivalent to a user never having opened the
-            // link in a browser under this identity), surfacing as a 403 even
-            // with a token that holds sufficient Files.Read.All/Sites.Read.All
-            // scope. "IfNecessary" only grants access for this request's
-            // duration, matching what a read-only template sync needs. Sent
-            // on every call, not just /shares — Prefer is advisory HTTP, and
-            // the /sites and /drives endpoints this service also calls simply
-            // ignore a Prefer value they don't recognize.
-            Prefer: 'redeemSharingLinkIfNecessary',
-          },
-        }),
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+      },
       (outcome) => {
         const status = outcome.error?.response?.status;
         return {
@@ -182,124 +151,58 @@ export class GraphSharePointService {
     });
   }
 
-  private isPrivateHost(hostname: string): boolean {
-    return (
-      hostname === 'localhost' ||
-      /^127\./.test(hostname) ||
-      /^10\./.test(hostname) ||
-      /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
-      /^192\.168\./.test(hostname) ||
-      /^169\.254\./.test(hostname)
-    );
-  }
-
   /**
-   * Resolves a browsed folder's server-relative path (extracted from an
-   * AllItems.aspx `id=` query param) to a folder driveItem, without ever
-   * assuming where the site boundary sits within that path — Graph's
-   * `/sites/{hostname}:/{path}` 404s unless `{path}` is exactly a site's own
-   * path (no "nearest site" resolution the way on-prem SharePoint REST's
-   * `_api/web` provides — see SharePointService.resolveSiteFromUrl for that
-   * on-prem equivalent). So this walks the path from longest to shortest
-   * prefix, trying each as a candidate site path, until one resolves.
-   *
-   * Once the site is found, the remaining path suffix (what's left after
-   * the matched site path) is resolved against that site's default drive
-   * via the documented `/sites/{siteId}/drive/root:/{path}:` addressing.
+   * Resolves whichever URL shape was pasted down to the Graph "list
+   * children of this folder" URL — the one piece every listing/testing
+   * method here actually needs. Purely a string transform (encodeShareId
+   * validates and encodes; no network call), which is why this isn't async.
    */
-  private async resolveFolderByPath(
-    hostname: string,
-    folderPath: string,
-    accessToken: string
-  ): Promise<{ driveId: string; itemId: string }> {
-    const segments = folderPath.split('/').filter(Boolean);
-
-    for (let splitAt = segments.length; splitAt >= 1; splitAt--) {
-      const candidateSitePath = segments.slice(0, splitAt).join('/');
-      const encodedSitePath = candidateSitePath
-        .split('/')
-        .map((segment) => encodeURIComponent(segment))
-        .join('/');
-
-      let siteResponse: any;
-      try {
-        siteResponse = await this.get(`${GRAPH_BASE_URL}/sites/${hostname}:/${encodedSitePath}`, accessToken);
-      } catch (error: any) {
-        // A 404 here just means this prefix isn't the site boundary — keep
-        // walking to a shorter prefix. Any other failure (401/403/network)
-        // is real and should surface immediately, not be swallowed by the
-        // walk loop.
-        if (error.message && error.message.includes('not found')) continue;
-        throw error;
-      }
-
-      const siteId = siteResponse.data.id;
-      const remainingSegments = segments.slice(splitAt);
-      if (remainingSegments.length === 0) {
-        throw new Error('This link points to a site, not a folder inside a document library');
-      }
-      const remainingPath = remainingSegments.map((segment) => encodeURIComponent(segment)).join('/');
-
-      const folderResponse = await this.get(`${GRAPH_BASE_URL}/sites/${siteId}/drive/root:/${remainingPath}:`, accessToken);
-      return { driveId: folderResponse.data.parentReference?.driveId, itemId: folderResponse.data.id };
-    }
-
-    throw new Error('Could not resolve a SharePoint site from this folder link');
-  }
-
-  /**
-   * Downloads Graph's own pre-signed @microsoft.graph.downloadUrl. No
-   * Authorization header is sent — Graph already scoped and signed this URL
-   * to the specific item, so our bearer token never reaches that host.
-   * Still validated (https + not a private/loopback address) rather than
-   * followed blindly, since a compromised/mistaken Graph response or
-   * redirect chain must not be able to point this at an internal address.
-   */
-  async downloadFile(downloadUrl: string): Promise<Buffer> {
-    const parsed = new URL(downloadUrl);
-    if (parsed.protocol !== 'https:') {
-      throw new Error('Refusing to fetch a non-https download URL');
-    }
-    if (this.isPrivateHost(parsed.hostname)) {
-      throw new Error('Refusing to fetch a download URL pointing at a private/internal host');
-    }
-    const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
-    return Buffer.from(response.data);
-  }
-
-  /**
-   * Resolves whichever URL shape was pasted (see parseAllItemsFolderPath's
-   * doc comment) down to the Graph "list children of this folder" URL — the
-   * one piece every public method here actually needs.
-   */
-  private async resolveRootChildrenUrl(url: string, accessToken: string): Promise<string> {
-    if (!isMicrosoftSharingUrl(url)) {
-      throw new Error(
-        'That doesn’t look like a SharePoint or OneDrive link — expected a sharepoint.com, onedrive.com, or 1drv.ms URL'
-      );
-    }
-
-    const browsedFolder = parseAllItemsFolderPath(url);
-    if (browsedFolder) {
-      const { driveId, itemId } = await this.resolveFolderByPath(browsedFolder.hostname, browsedFolder.folderPath, accessToken);
-      return `${GRAPH_BASE_URL}/drives/${driveId}/items/${itemId}/children`;
-    }
-
+  private resolveRootChildrenUrl(url: string): string {
     const shareId = this.encodeShareId(url);
     return `${GRAPH_BASE_URL}/shares/${shareId}/driveItem/children`;
   }
 
   /**
-   * Cheapest possible check that a pasted folder link + token combination
-   * actually resolves — one call, no recursive listing.
+   * Resolves a pasted SharePoint/OneDrive URL to a concrete {driveId,
+   * itemId}. Not currently called by any controller/service — listing and
+   * downloading both resolve fresh from the pasted URL on every call
+   * instead (see resolveRootChildrenUrl). Exists for SharePointResolvedRoot
+   * (also unused today) if that binding is wired in later.
    */
-  async testShareAccess(
-    shareUrl: string,
-    token: SharePointOAuthToken
-  ): Promise<{ success: boolean; message: string }> {
+  async resolveShareRoot(url: string, tokenSource: TokenSource): Promise<{ driveId: string; itemId: string; name?: string }> {
+    const tokenProvider = toTokenProvider(tokenSource);
+    const shareId = this.encodeShareId(url);
+    const response = await this.get(`${GRAPH_BASE_URL}/shares/${shareId}/driveItem`, tokenProvider);
+    const driveId = response.data?.parentReference?.driveId;
+    const itemId = response.data?.id;
+    if (!driveId || !itemId) {
+      throw new Error('Could not resolve a drive/item reference from this SharePoint link');
+    }
+    return { driveId, itemId, name: response.data?.name };
+  }
+
+  /**
+   * Downloads Graph's own pre-signed @microsoft.graph.downloadUrl. No
+   * Authorization header is sent — Graph already scoped and signed it to
+   * the specific item. Still validated against an explicit host allowlist
+   * (graphUrlGuard) rather than followed blindly, in case a compromised or
+   * malformed response points it at an internal address.
+   */
+  async downloadFile(downloadUrl: string): Promise<Buffer> {
+    assertDownloadUrl(downloadUrl);
+    const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+    return Buffer.from(response.data);
+  }
+
+  /**
+   * Cheapest possible check that a pasted folder link + credential actually
+   * resolves — one call, no recursive listing.
+   */
+  async testShareAccess(shareUrl: string, tokenSource: TokenSource): Promise<{ success: boolean; message: string }> {
     try {
-      const childrenUrl = await this.resolveRootChildrenUrl(shareUrl, token.accessToken);
-      await this.get(childrenUrl, token.accessToken);
+      const tokenProvider = toTokenProvider(tokenSource);
+      const childrenUrl = this.resolveRootChildrenUrl(shareUrl);
+      await this.get(childrenUrl, tokenProvider);
       return { success: true, message: 'Successfully connected to SharePoint via Microsoft Graph' };
     } catch (error: any) {
       return { success: false, message: error.message || 'Connection failed' };
@@ -308,13 +211,16 @@ export class GraphSharePointService {
 
   /**
    * Follows @odata.nextLink so libraries over the 200-item Graph page size
-   * are still fully listed.
+   * are still fully listed. Every URL, including the first, is
+   * host-validated via assertGraphApiUrl first — an off-host nextLink would
+   * otherwise replay this app's Graph access token to an attacker's server.
    */
-  private async listChildren(url: string, accessToken: string, retryBudget?: RetryBudget): Promise<any[]> {
+  private async listChildren(url: string, tokenProvider: GraphTokenProvider, retryBudget?: RetryBudget): Promise<any[]> {
     const items: any[] = [];
     let nextUrl: string | undefined = url;
     while (nextUrl) {
-      const response = await this.get(nextUrl, accessToken, retryBudget);
+      assertGraphApiUrl(nextUrl);
+      const response = await this.get(nextUrl, tokenProvider, retryBudget);
       items.push(...(response.data.value || []));
       nextUrl = response.data['@odata.nextLink'];
     }
@@ -335,8 +241,9 @@ export class GraphSharePointService {
    * download URL instead of a server-relative path, which is exactly what
    * downloadFile() expects back.
    */
-  async listTemplateFiles(shareUrl: string, token: SharePointOAuthToken): Promise<SharePointFileListing> {
-    const rootChildrenUrl = await this.resolveRootChildrenUrl(shareUrl, token.accessToken);
+  async listTemplateFiles(shareUrl: string, tokenSource: TokenSource): Promise<SharePointFileListing> {
+    const tokenProvider = toTokenProvider(tokenSource);
+    const rootChildrenUrl = this.resolveRootChildrenUrl(shareUrl);
 
     const queue: GraphFolderQueueItem[] = [{ childrenUrl: rootChildrenUrl, relativePath: '', depth: 0 }];
 
@@ -362,7 +269,7 @@ export class GraphSharePointService {
     // keeps output deterministic under concurrency.
     while (queue.length > 0 && !truncated) {
       const batch = queue.splice(0, CONCURRENT_FOLDER_FETCHES);
-      const results = await Promise.all(batch.map((item) => this.fetchFolder(token, item, retryBudget)));
+      const results = await Promise.all(batch.map((item) => this.fetchFolder(tokenProvider, item, retryBudget)));
 
       for (const result of results) {
         if (truncated) break;
@@ -413,7 +320,7 @@ export class GraphSharePointService {
    * caller, in queue order, once every promise in a batch has settled).
    */
   private async fetchFolder(
-    token: SharePointOAuthToken,
+    tokenProvider: GraphTokenProvider,
     item: GraphFolderQueueItem,
     retryBudget: RetryBudget
   ): Promise<GraphFetchFolderResult> {
@@ -421,7 +328,7 @@ export class GraphSharePointService {
 
     let children: any[];
     try {
-      children = await this.listChildren(childrenUrl, token.accessToken, retryBudget);
+      children = await this.listChildren(childrenUrl, tokenProvider, retryBudget);
     } catch (err: any) {
       if (err.status === 403 && depth > 0) {
         logger.warn(`Skipping inaccessible folder "${relativePath}" (Graph): ${err.message}`);

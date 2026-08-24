@@ -3,6 +3,7 @@ import https from 'https';
 import logger from '../util/logger';
 import { GraphSharePointService } from './GraphSharePointService';
 import { isTemplateFileName, isWithinMaxTemplateSize, hasZipSignature } from './sharePointFileValidation';
+import { GraphTokenProvider } from './auth/MsalClientService';
 import {
   withThrottleRetry,
   createRetryBudget,
@@ -111,14 +112,38 @@ export interface SharePointConfig {
   folder: string;
 }
 
+// Three shapes: a plain NTLM credentials object, a plain { accessToken }
+// object, or a GraphTokenProvider closure (the session-backed flow). The
+// two OAuth-shaped alternatives are narrowed together via isTokenBased.
+type SharePointAuth = SharePointCredentials | SharePointOAuthToken | GraphTokenProvider;
+
+// Detects if a SharePoint URL is SharePoint Online or On-Premise. Exported
+// standalone (not just the class's private wrapper below) so callers like
+// SharePointController can use the exact same signal to decide which auth
+// shape a request needs, without instantiating SharePointService just for
+// this check — single source of truth for what "Online" means.
+export function isSharePointOnlineUrl(siteUrl: string): boolean {
+  return siteUrl.toLowerCase().includes('.sharepoint.com');
+}
+
 export class SharePointService {
   private graphService = new GraphSharePointService();
+
+  /**
+   * True for anything OAuth/Graph-shaped (a plain { accessToken } object or
+   * a GraphTokenProvider closure) — false only for plain NTLM credentials.
+   * A user-defined type guard so callers get real narrowing when they check
+   * it inline, rather than needing a manual cast at every branch.
+   */
+  private isTokenBased(auth: SharePointAuth): auth is SharePointOAuthToken | GraphTokenProvider {
+    return typeof auth === 'function' || 'accessToken' in auth;
+  }
 
   /**
    * Detects if the SharePoint URL is SharePoint Online or On-Premise
    */
   private isSharePointOnline(siteUrl: string): boolean {
-    return siteUrl.toLowerCase().includes('.sharepoint.com');
+    return isSharePointOnlineUrl(siteUrl);
   }
 
   /**
@@ -376,13 +401,13 @@ export class SharePointService {
    */
   async testConnection(
     config: SharePointConfig,
-    credentials: SharePointCredentials | SharePointOAuthToken
+    credentials: SharePointAuth
   ): Promise<{ success: boolean; message: string }> {
     try {
       const isOnline = this.isSharePointOnline(config.siteUrl);
 
       if (isOnline) {
-        if (!('accessToken' in credentials)) {
+        if (!this.isTokenBased(credentials)) {
           return {
             success: false,
             message: 'SharePoint Online requires a Microsoft Graph access token, not a username/password.',
@@ -393,7 +418,7 @@ export class SharePointService {
         return this.graphService.testShareAccess(config.siteUrl, credentials);
       }
 
-      if ('accessToken' in credentials) {
+      if (this.isTokenBased(credentials)) {
         return {
           success: false,
           message: 'On-premise SharePoint requires a username/password, not a Microsoft Graph token.',
@@ -450,11 +475,11 @@ export class SharePointService {
    */
   async listTemplateFiles(
     config: SharePointConfig,
-    credentials: SharePointCredentials | SharePointOAuthToken
+    credentials: SharePointAuth
   ): Promise<SharePointFileListing> {
     try {
       const isOnline = this.isSharePointOnline(config.siteUrl);
-      const isOAuth = 'accessToken' in credentials;
+      const isOAuth = this.isTokenBased(credentials);
 
       if (isOnline && isOAuth) {
         // config.siteUrl doubles as the pasted SharePoint/OneDrive sharing
@@ -566,7 +591,7 @@ export class SharePointService {
    */
   private async fetchFolder(
     config: SharePointConfig,
-    credentials: SharePointCredentials | SharePointOAuthToken,
+    credentials: SharePointAuth,
     isOAuth: boolean,
     item: FolderQueueItem,
     retryBudget: RetryBudget
@@ -676,10 +701,10 @@ export class SharePointService {
   async downloadFile(
     siteUrl: string,
     serverRelativeUrl: string,
-    auth: SharePointCredentials | SharePointOAuthToken
+    auth: SharePointAuth
   ): Promise<Buffer> {
     try {
-      const isOAuth = 'accessToken' in auth;
+      const isOAuth = this.isTokenBased(auth);
       let buffer: Buffer;
 
       if (this.isSharePointOnline(siteUrl) && isOAuth) {
@@ -730,12 +755,12 @@ export class SharePointService {
    */
   private async makeSharePointRequest(
     url: string,
-    auth: SharePointCredentials | SharePointOAuthToken,
+    auth: SharePointAuth,
     method: string = 'GET',
     additionalConfig: any = {},
     retryBudget?: RetryBudget
   ): Promise<any> {
-    const isOAuth = 'accessToken' in auth;
+    const isOAuth = this.isTokenBased(auth);
     const configWithTimeout = { timeout: REQUEST_TIMEOUT_MS, ...additionalConfig };
 
     return withThrottleRetry(

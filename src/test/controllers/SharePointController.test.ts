@@ -15,6 +15,15 @@ const mockSvc = {
 
 jest.mock('../../services/SharePointService', () => ({
   SharePointService: jest.fn().mockImplementation(() => mockSvc),
+  isSharePointOnlineUrl: (siteUrl: string) => siteUrl.toLowerCase().includes('.sharepoint.com'),
+}));
+
+// Keeps this file from pulling in the real @azure/msal-node -> mongoose
+// chain (via MsalClientService -> MongoTokenCachePlugin -> the MsalTokenCache
+// model) — these tests exercise SharePointController's own routing logic,
+// not token acquisition, which is covered by MsalClientService's own tests.
+jest.mock('../../services/auth/MsalClientService', () => ({
+  createTokenProvider: jest.fn(() => jest.fn().mockResolvedValue('mock-graph-token')),
 }));
 
 const mockGetMinioFiles = jest.fn();
@@ -76,7 +85,7 @@ describe('SharePointController', () => {
      */
     test('200 on success', async () => {
       const req: any = {
-        body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } },
+        body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } },
       };
       const res = buildRes();
       mockSvc.testConnection.mockResolvedValueOnce({ success: true });
@@ -87,7 +96,7 @@ describe('SharePointController', () => {
 
     test('500 on service error', async () => {
       const req: any = {
-        body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } },
+        body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } },
       };
       const res = buildRes();
       mockSvc.testConnection.mockRejectedValueOnce(new Error('tc-fail'));
@@ -98,14 +107,15 @@ describe('SharePointController', () => {
 
     // Regression: an Online config's whole location lives in siteUrl (the
     // pasted sharing/folder link) — library/folder are legitimately blank,
-    // and the request must not be rejected for that reason when oauthToken
+    // and the request must not be rejected for that reason when a session
     // is present. This was a real bug: the blanket `!library || !folder`
     // check 400'd every Online request silently (no log line at all,
     // before the handler's own logging ever ran), so Online sync appeared
     // to just not connect.
-    test('200 with oauthToken even when library/folder are empty (Online config)', async () => {
+    test('200 with a session even when library/folder are empty (Online config)', async () => {
       const req: any = {
-        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '', oauthToken: { accessToken: 't' } },
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '' },
+        spSession: { homeAccountId: 'home-1' },
       };
       const res = buildRes();
       mockSvc.testConnection.mockResolvedValueOnce({ success: true });
@@ -142,6 +152,92 @@ describe('SharePointController', () => {
       await controller.testConnection(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+  });
+
+  describe('resolveAuth (hard cutover — Online authenticates via session only)', () => {
+    test('explicitly rejects a client-supplied oauthToken with 400 oauth_token_not_accepted, never silently ignoring it', async () => {
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '', oauthToken: { accessToken: 't' } },
+        spSession: { homeAccountId: 'home-1' },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({ success: false, message: 'oauth_token_not_accepted' });
+      expect(mockSvc.testConnection).not.toHaveBeenCalled();
+    });
+
+    test('rejects oauthToken even for an on-prem siteUrl (not just Online)', async () => {
+      const req: any = {
+        body: { siteUrl: 'http://sp-server/sites/project', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({ success: false, message: 'oauth_token_not_accepted' });
+    });
+
+    test('an Online request with no session at all gets 401 reauth_required', async () => {
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '' },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.body).toEqual({ success: false, message: 'reauth_required' });
+      expect(mockSvc.testConnection).not.toHaveBeenCalled();
+    });
+
+    test('an Online request with a session uses a fresh GraphTokenProvider, never a client-supplied token', async () => {
+      const { createTokenProvider } = require('../../services/auth/MsalClientService');
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '' },
+        spSession: { homeAccountId: 'home-1' },
+      };
+      const res = buildRes();
+      mockSvc.testConnection.mockResolvedValueOnce({ success: true });
+
+      await controller.testConnection(req, res);
+
+      expect(createTokenProvider).toHaveBeenCalledWith('home-1');
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    test('on-prem requests are unaffected — still just need credentials, no session required', async () => {
+      const req: any = {
+        body: {
+          siteUrl: 'http://sp-server/sites/project',
+          library: 'l',
+          folder: 'f',
+          credentials: { username: 'u', password: 'p' },
+        },
+      };
+      const res = buildRes();
+      mockSvc.testConnection.mockResolvedValueOnce({ success: true });
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockSvc.testConnection).toHaveBeenCalledWith(expect.anything(), { username: 'u', password: 'p' });
+    });
+
+    test('an on-prem request with no credentials and no session still gets Missing required fields, not reauth_required', async () => {
+      const req: any = {
+        body: { siteUrl: 'http://sp-server/sites/project', library: 'l', folder: 'f' },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({ success: false, message: 'Missing required fields' });
     });
   });
 
@@ -207,7 +303,7 @@ describe('SharePointController', () => {
       const res = buildRes();
       mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [{ name: 'a' }], truncated: false });
       await controller.listFiles(
-        { body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } } } as any,
+        { body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } } } as any,
         res
       );
       expect(res.status).toHaveBeenCalledWith(200);
@@ -218,7 +314,7 @@ describe('SharePointController', () => {
       const res = buildRes();
       mockSvc.listTemplateFiles.mockRejectedValueOnce(new Error('list-fail'));
       await controller.listFiles(
-        { body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } } } as any,
+        { body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } } } as any,
         res
       );
       expect(res.status).toHaveBeenCalledWith(500);
@@ -233,7 +329,7 @@ describe('SharePointController', () => {
       expiredTokenError.status = 401;
       mockSvc.listTemplateFiles.mockRejectedValueOnce(expiredTokenError);
       await controller.listFiles(
-        { body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } } } as any,
+        { body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } } } as any,
         res
       );
       expect(res.status).toHaveBeenCalledWith(401);
@@ -246,7 +342,7 @@ describe('SharePointController', () => {
     // Regression: this exact request shape (Online, no library/folder) was
     // silently rejected with 400 before the fix — the actual bug found when
     // testing the real "Sync from SharePoint" flow end to end.
-    test('200 with oauthToken even when library/folder are empty (Online config)', async () => {
+    test('200 with a session even when library/folder are empty (Online config)', async () => {
       const res = buildRes();
       mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [{ name: 'SVD-template.docx' }], truncated: false });
       await controller.listFiles(
@@ -255,8 +351,8 @@ describe('SharePointController', () => {
             siteUrl: 'https://tenant.sharepoint.com/:f:/r/teams/x/Shared Documents/DocGen Templates',
             library: '',
             folder: '',
-            oauthToken: { accessToken: 't' },
           },
+          spSession: { homeAccountId: 'home-1' },
         } as any,
         res
       );
@@ -301,7 +397,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'shared',
           },
@@ -336,7 +432,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -366,7 +462,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -391,7 +487,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -430,7 +526,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -466,7 +562,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -493,7 +589,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -520,7 +616,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -543,7 +639,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -576,7 +672,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'shared',
           },
@@ -617,7 +713,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -656,7 +752,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -690,7 +786,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -722,7 +818,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -751,7 +847,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -784,7 +880,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -810,7 +906,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -835,7 +931,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -860,7 +956,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -888,7 +984,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -909,7 +1005,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -1129,6 +1225,74 @@ describe('SharePointController', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.success).toBe(true);
       expect(__mockConfigModel.findOne).toHaveBeenCalledWith({ userId: 'u1' });
+    });
+
+    test('getConfig: flags a legacy Online row (populated library/folder) as requiresRelink', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 'https://tenant.sharepoint.com/sites/projectx',
+          library: 'Shared Documents',
+          folder: 'Templates/STD',
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(true);
+      expect(res.body.relinkReason).toBe('legacy-site-path');
+    });
+
+    test('getConfig: does not flag a Copy-Link-shaped Online row', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 'https://tenant.sharepoint.com/:f:/r/teams/x/Shared%20Documents/y',
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(false);
+      expect(res.body.relinkReason).toBeNull();
+    });
+
+    test('getConfig: does not flag an on-prem row', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 'http://sp-server/sites/project',
+          library: 'Templates',
+          folder: 'DocGen',
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(false);
+    });
+
+    test('getConfig: trusts an already-confirmed row (authType + linkResolvedAt present) without reclassifying', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          // This siteUrl shape would otherwise classify as legacy — but a
+          // prior confirmed resolution should be trusted over the heuristic.
+          siteUrl: 'https://tenant.sharepoint.com/sites/projectx',
+          library: 'Shared Documents',
+          folder: 'Templates/STD',
+          authType: 'online',
+          linkResolvedAt: new Date(),
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(false);
     });
 
     /**

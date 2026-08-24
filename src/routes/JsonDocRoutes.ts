@@ -9,6 +9,10 @@ import moment from 'moment';
 import { DatabaseController } from '../controllers/DatabaseController';
 import { DataProviderController } from '../controllers/DataProviderController';
 import { SharePointController } from '../controllers/SharePointController';
+import { AuthController } from '../controllers/AuthController';
+import { requireSession } from '../helpers/auth/requireSession';
+import { requireCsrf } from '../helpers/auth/requireCsrf';
+import { attachSessionIfPresent } from '../helpers/auth/attachSessionIfPresent';
 const Minio = require('minio');
 
 export class Routes {
@@ -17,6 +21,7 @@ export class Routes {
   public dataBaseController: DatabaseController = new DatabaseController();
   public dataProviderController: DataProviderController = new DataProviderController();
   public sharePointController: SharePointController = new SharePointController();
+  public authController: AuthController = new AuthController();
 
   public routes(app: any, upload: any): void {
     app.route('/health').get(async (_req: Request, res: Response) => {
@@ -432,6 +437,9 @@ export class Routes {
           const statusCode = Number(err?.statusCode || 500);
           res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
             message: `Failed to create the document ${err?.message || err}`,
+            code: err?.code,
+            dependency: err?.dependency,
+            url: err?.url,
             //Error not structured correctly
             error: err,
           });
@@ -543,7 +551,13 @@ export class Routes {
           // downloadFile streams the response directly
         })
         .catch((err) => {
-          res.status(404).json({ status: 404, message: err });
+          const statusCode = Number(err?.statusCode) || 404;
+          res.status(statusCode).json({
+            status: statusCode,
+            message: err?.message || String(err),
+            code: err?.code,
+            dependency: err?.dependency,
+          });
         });
     });
     app.route('/minio/createBucket').post(async (req: Request, res: Response) => {
@@ -680,22 +694,27 @@ export class Routes {
       .route('/azure/work-item-types')
       .get((req: Request, res: Response) => this.dataProviderController.getWorkItemTypeList(req, res));
 
-    // SharePoint integration routes
+    // SharePoint integration routes. attachSessionIfPresent/requireCsrf are
+    // both no-ops when there's no session — these routes are dual-purpose
+    // and on-prem NTLM never has one. For an Online siteUrl,
+    // SharePointController.resolveAuth requires the session and requireCsrf
+    // enforces the double-submit check (the cookie is SameSite=None, so
+    // nothing else protects it — see requireCsrf.ts).
     app
       .route('/sharepoint/test-connection')
-      .post((req: Request, res: Response) => this.sharePointController.testConnection(req, res));
+      .post(attachSessionIfPresent, requireCsrf, (req: Request, res: Response) => this.sharePointController.testConnection(req, res));
 
     app
       .route('/sharepoint/list-files')
-      .post((req: Request, res: Response) => this.sharePointController.listFiles(req, res));
+      .post(attachSessionIfPresent, requireCsrf, (req: Request, res: Response) => this.sharePointController.listFiles(req, res));
 
     app
       .route('/sharepoint/check-conflicts')
-      .post((req: Request, res: Response) => this.sharePointController.checkConflicts(req, res));
+      .post(attachSessionIfPresent, requireCsrf, (req: Request, res: Response) => this.sharePointController.checkConflicts(req, res));
 
     app
       .route('/sharepoint/sync-templates')
-      .post((req: Request, res: Response) => this.sharePointController.syncTemplates(req, res));
+      .post(attachSessionIfPresent, requireCsrf, (req: Request, res: Response) => this.sharePointController.syncTemplates(req, res));
 
     app
       .route('/sharepoint/config')
@@ -715,8 +734,17 @@ export class Routes {
       .route('/sharepoint/resolve-url')
       .post((req: Request, res: Response) => this.sharePointController.resolveUrl(req, res));
 
-    // Note: for SharePoint Online, the frontend sends a Microsoft Graph access
-    // token the user pastes in (e.g. from Graph Explorer) — no Azure AD app
-    // registration or OAuth popup involved.
+    // SharePoint Online OAuth (BFF) — Authorization Code + PKCE, popup-based.
+    // SharePoint Online authenticates exclusively through this flow; a
+    // client-supplied Graph token is rejected (see resolveAuth).
+    app.route('/auth/login').get((req: Request, res: Response) => this.authController.login(req, res));
+    app.route('/auth/callback').get((req: Request, res: Response) => this.authController.callback(req, res));
+    app.route('/auth/session/exchange').post((req: Request, res: Response) => this.authController.exchangeSessionHandle(req, res));
+    app
+      .route('/auth/session')
+      .get(requireSession, (req: Request, res: Response) => this.authController.getSessionInfo(req, res));
+    app
+      .route('/auth/logout')
+      .post(requireSession, requireCsrf, (req: Request, res: Response) => this.authController.logout(req, res));
   }
 }

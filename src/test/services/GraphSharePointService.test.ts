@@ -60,144 +60,108 @@ describe('GraphSharePointService', () => {
       );
       expect(mockedAxios.get).not.toHaveBeenCalled();
     });
-  });
 
-  describe('browsed AllItems.aspx folder URLs (path-based resolution, not /shares)', () => {
-    // Real production example: navigating into a folder and copying the
-    // address bar, rather than using "Copy Link", produces this shape — the
-    // real folder path lives in the `id=` query param, not the page path.
-    const allItemsUrl =
-      'https://tenant.sharepoint.com/teams/TeamName/Shared%20Documents/Forms/AllItems.aspx' +
-      '?csf=1&web=1&e=sess123&CID=abc-def&FolderCTID=0x012001' +
-      '&id=%2Fteams%2FTeamName%2FShared%20Documents%2FTraining%20and%20Templates%2FDocGen%20Templates';
-
-    test('walks the path from longest to shortest prefix to find the site, then resolves the folder within its drive', async () => {
-      mockedAxios.get
-        // segments: ['teams','TeamName','Shared Documents','Training and Templates','DocGen Templates']
-        // Longest candidate (all 5 segments) fails
-        .mockRejectedValueOnce({ response: { status: 404 } })
-        // 4 segments (.../Training and Templates) fails
-        .mockRejectedValueOnce({ response: { status: 404 } })
-        // 3 segments (.../Shared Documents) fails — a library isn't a site
-        .mockRejectedValueOnce({ response: { status: 404 } })
-        // 2 segments (.../teams/TeamName) resolves as the site
-        .mockResolvedValueOnce({ data: { id: 'site-id-1' } })
-        // remaining path resolved against that site's default drive
-        .mockResolvedValueOnce({
-          data: { id: 'folder-item-1', parentReference: { driveId: 'drive-1' } },
-        })
-        // root children of the resolved folder
-        .mockResolvedValueOnce({
-          data: {
-            value: [{ id: 'folder-svd', name: 'SVD', folder: {}, parentReference: { driveId: 'drive-1' } }],
-          },
-        })
-        // SVD's children
-        .mockResolvedValueOnce({
-          data: {
-            value: [
-              {
-                id: 'item1',
-                name: 'SVD-template.docx',
-                file: {},
-                size: 1234,
-                createdDateTime: '2023-12-01T00:00:00Z',
-                lastModifiedDateTime: '2024-01-01T00:00:00Z',
-                '@microsoft.graph.downloadUrl': 'https://download.example/1',
-              },
-            ],
-          },
-        });
-
-      const service = new GraphSharePointService();
-      const { files, truncated } = await service.listTemplateFiles(allItemsUrl, token);
-
-      expect(truncated).toBe(false);
-      expect(files).toEqual([
-        {
-          name: 'SVD-template.docx',
-          serverRelativeUrl: 'https://download.example/1',
-          timeCreated: '2023-12-01T00:00:00Z',
-          timeLastModified: '2024-01-01T00:00:00Z',
-          length: 1234,
-          docType: 'SVD',
-          relativePath: 'SVD/SVD-template.docx',
-        },
-      ]);
-
-      // First call must have tried the site-by-path candidates before ever
-      // hitting /shares — confirms the AllItems.aspx shape never goes near
-      // the /shares endpoint at all.
-      const calledUrls = mockedAxios.get.mock.calls.map((call) => call[0]);
-      expect(calledUrls.every((url) => !url.includes('/shares/'))).toBe(true);
-      expect(calledUrls[3]).toContain('/sites/tenant.sharepoint.com:/teams/TeamName');
-      expect(calledUrls[4]).toContain('/sites/site-id-1/drive/root:/');
-      expect(calledUrls[4]).toContain('Shared%20Documents');
-    });
-
-    test('throws a clear error when no site is found anywhere along the path', async () => {
-      mockedAxios.get.mockRejectedValue({ response: { status: 404 } });
-
+    test('resolveShareRoot rejects a non-Microsoft URL before any network call too', async () => {
       const service = new GraphSharePointService();
 
-      await expect(service.listTemplateFiles(allItemsUrl, token)).rejects.toThrow(
-        'Could not resolve a SharePoint site from this folder link'
+      await expect(service.resolveShareRoot('https://evil.example.com/x', token)).rejects.toThrow(
+        'SharePoint or OneDrive link'
       );
-    });
-
-    test('throws a clear error when the whole path is the site itself (no folder remains)', async () => {
-      mockedAxios.get.mockResolvedValueOnce({ data: { id: 'site-id-1' } });
-
-      const service = new GraphSharePointService();
-      const siteOnlyUrl =
-        'https://tenant.sharepoint.com/teams/TeamName/Forms/AllItems.aspx?id=%2Fteams%2FTeamName';
-
-      await expect(service.listTemplateFiles(siteOnlyUrl, token)).rejects.toThrow(
-        'This link points to a site, not a folder inside a document library'
-      );
-    });
-
-    test('a 401/403 during the path walk surfaces immediately rather than being treated as "keep walking"', async () => {
-      mockedAxios.get.mockRejectedValueOnce({ response: { status: 401 } });
-
-      const service = new GraphSharePointService();
-
-      await expect(service.listTemplateFiles(allItemsUrl, token)).rejects.toThrow(
-        'Graph access token expired or invalid'
-      );
-      // Only one call — must not have continued walking after a real auth error.
-      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
-    });
-
-    // The thrown error must carry the real HTTP status so callers can
-    // respond 401 (an expired token is expected, not a server error)
-    // instead of an unconditional 500.
-    test('a 401 during the path walk carries status 401 on the thrown error', async () => {
-      mockedAxios.get.mockRejectedValueOnce({ response: { status: 401 } });
-
-      const service = new GraphSharePointService();
-
-      let caught: any;
-      try {
-        await service.listTemplateFiles(allItemsUrl, token);
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught.status).toBe(401);
-    });
-
-    test('rejects a non-Microsoft hostname even in AllItems.aspx shape before any network call', async () => {
-      const service = new GraphSharePointService();
-      const evilUrl = 'https://evil.example.com/Shared%20Documents/Forms/AllItems.aspx?id=%2FShared%20Documents%2FX';
-
-      await expect(service.listTemplateFiles(evilUrl, token)).rejects.toThrow('SharePoint or OneDrive link');
       expect(mockedAxios.get).not.toHaveBeenCalled();
     });
   });
 
-  describe('testShareAccess', () => {
-    test('returns success when /shares/{id}/driveItem resolves', async () => {
+  // Regression: a live spike this session proved /shares resolves BOTH a
+  // "Copy Link" sharing URL and a plain browsed-folder address-bar URL
+  // (the .../shared?id=%2Fsites%2F... shape) under Files.Read.All alone.
+  // GraphSharePointService no longer has a separate /sites/{hostname}:/{path}
+  // + /sites/{siteId}/drive/root:/{path}: resolution path — every Online
+  // URL shape goes through /shares only, which needs no Sites.Read.All.
+  describe('no /sites/* resolution path exists anymore', () => {
+    const addressBarUrl =
+      'https://tenant-my.sharepoint.com/shared?id=%2Fsites%2FDocgen%2FShared%20Documents%2Fshared&listurl=https%3A%2F%2Ftenant.sharepoint.com%2Fsites%2FDocgen%2FShared%20Documents';
+
+    test('an address-bar-style URL (with an id= query param) resolves via /shares, never /sites/', async () => {
       mockedAxios.get.mockResolvedValueOnce({ data: { id: 'item1' } });
+
+      const service = new GraphSharePointService();
+      const result = await service.testShareAccess(addressBarUrl, token);
+
+      expect(result.success).toBe(true);
+      const calledUrl = mockedAxios.get.mock.calls[0][0];
+      expect(calledUrl).toContain('/shares/');
+      expect(calledUrl).not.toContain('/sites/');
+    });
+
+    test('GraphSharePointService has no resolveFolderByPath/parseAllItemsFolderPath methods left', () => {
+      const service: any = new GraphSharePointService();
+      expect(service.resolveFolderByPath).toBeUndefined();
+      expect(service.parseAllItemsFolderPath).toBeUndefined();
+    });
+  });
+
+  describe('resolveShareRoot', () => {
+    test('returns driveId/itemId/name from the resolved driveItem', async () => {
+      mockedAxios.get.mockResolvedValueOnce({
+        data: { id: 'item-1', name: 'DocGen Templates', parentReference: { driveId: 'drive-1' } },
+      });
+
+      const service = new GraphSharePointService();
+      const result = await service.resolveShareRoot(shareUrl, token);
+
+      expect(result).toEqual({ driveId: 'drive-1', itemId: 'item-1', name: 'DocGen Templates' });
+      const calledUrl = mockedAxios.get.mock.calls[0][0];
+      expect(calledUrl).toMatch(/\/shares\/u![^/]+\/driveItem$/);
+    });
+
+    test('throws a clear error when the response has no driveId/itemId', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { name: 'incomplete' } });
+
+      const service = new GraphSharePointService();
+
+      await expect(service.resolveShareRoot(shareUrl, token)).rejects.toThrow(
+        'Could not resolve a drive/item reference from this SharePoint link'
+      );
+    });
+  });
+
+  describe('no redemption side effects (Prefer header)', () => {
+    test('testShareAccess sends no Prefer header at all — redeeming a link is a permission-granting side effect this read-only app must not cause', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { id: 'item1' } });
+      const service = new GraphSharePointService();
+
+      await service.testShareAccess(shareUrl, token);
+
+      const [, requestConfig] = mockedAxios.get.mock.calls[0];
+      expect(requestConfig.headers.Prefer).toBeUndefined();
+      expect(requestConfig.headers).toEqual({ Authorization: `Bearer ${token.accessToken}` });
+    });
+
+    test('resolveShareRoot sends no Prefer header', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { id: 'item1', parentReference: { driveId: 'd1' } } });
+      const service = new GraphSharePointService();
+
+      await service.resolveShareRoot(shareUrl, token);
+
+      const [, requestConfig] = mockedAxios.get.mock.calls[0];
+      expect(requestConfig.headers.Prefer).toBeUndefined();
+    });
+
+    test('listTemplateFiles sends no Prefer header on any request in the walk', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { value: [] } });
+      const service = new GraphSharePointService();
+
+      await service.listTemplateFiles(shareUrl, token);
+
+      for (const call of mockedAxios.get.mock.calls) {
+        expect(call[1].headers.Prefer).toBeUndefined();
+      }
+    });
+  });
+
+  describe('testShareAccess', () => {
+    test('returns success when /shares/{id}/driveItem/children resolves', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { value: [] } });
 
       const service = new GraphSharePointService();
       const result = await service.testShareAccess(shareUrl, token);
@@ -207,27 +171,29 @@ describe('GraphSharePointService', () => {
         message: 'Successfully connected to SharePoint via Microsoft Graph',
       });
       expect(mockedAxios.get).toHaveBeenCalledWith(
-        expect.stringMatching(/^https:\/\/graph\.microsoft\.com\/v1\.0\/shares\/u!/),
+        expect.stringMatching(/^https:\/\/graph\.microsoft\.com\/v1\.0\/shares\/u!.*\/driveItem\/children$/),
         {
           timeout: 15000,
           headers: {
             Authorization: `Bearer ${token.accessToken}`,
-            Prefer: 'redeemSharingLinkIfNecessary',
           },
         }
       );
     });
 
-    test('sends Prefer: redeemSharingLinkIfNecessary — /shares needs this to fully resolve a link the caller has not "opened" before, even with sufficient token scope', async () => {
-      mockedAxios.get.mockResolvedValueOnce({ data: { id: 'item1' } });
+    test('accepts a GraphTokenProvider function in place of a plain token object, and calls it to get the access token', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { value: [] } });
+      const tokenProvider = jest.fn().mockResolvedValue('provider-issued-token');
+
       const service = new GraphSharePointService();
+      await service.testShareAccess(shareUrl, tokenProvider);
 
-      await service.testShareAccess(shareUrl, token);
-
-      expect(mockedAxios.get.mock.calls[0][1].headers.Prefer).toBe('redeemSharingLinkIfNecessary');
+      expect(tokenProvider).toHaveBeenCalled();
+      const [, requestConfig] = mockedAxios.get.mock.calls[0];
+      expect(requestConfig.headers.Authorization).toBe('Bearer provider-issued-token');
     });
 
-    test('maps a 401 to a token-expired message', async () => {
+    test('maps a 401 to a re-authentication message (no longer paste-specific wording)', async () => {
       mockedAxios.get.mockRejectedValueOnce({ response: { status: 401 } });
 
       const service = new GraphSharePointService();
@@ -235,6 +201,7 @@ describe('GraphSharePointService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('expired or invalid');
+      expect(result.message).not.toContain('paste');
     });
 
     test('maps a 403 to a permission message', async () => {
@@ -286,12 +253,17 @@ describe('GraphSharePointService', () => {
     });
 
     // Drives fake timers forward while withThrottleRetry is awaiting sleep().
+    // Needs a few more ticks than a bare axios call would, since get() now
+    // awaits the token provider before each request — an extra microtask
+    // hop per attempt.
     async function flushRetries() {
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 10; i++) {
         await Promise.resolve();
         jest.runAllTimers();
       }
     }
+
+    const constantTokenProvider = async () => 'tok';
 
     test('retries a thrown 429 and succeeds on the next attempt', async () => {
       const throttled: any = new Error('Too Many Requests');
@@ -299,7 +271,7 @@ describe('GraphSharePointService', () => {
       mockedAxios.get.mockRejectedValueOnce(throttled).mockResolvedValueOnce({ data: { id: 'item1' } });
 
       const service = new GraphSharePointService();
-      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', 'tok');
+      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', constantTokenProvider);
       await flushRetries();
       const result = await promise;
 
@@ -313,8 +285,8 @@ describe('GraphSharePointService', () => {
       mockedAxios.get.mockRejectedValue(denied);
 
       const service = new GraphSharePointService();
-      await expect((service as any).get('https://graph.microsoft.com/v1.0/x', 'tok')).rejects.toThrow(
-        'This token does not have permission to read this SharePoint folder'
+      await expect((service as any).get('https://graph.microsoft.com/v1.0/x', constantTokenProvider)).rejects.toThrow(
+        'This account does not have permission to read this SharePoint folder'
       );
       expect(mockedAxios.get).toHaveBeenCalledTimes(1);
     });
@@ -325,7 +297,7 @@ describe('GraphSharePointService', () => {
       mockedAxios.get.mockRejectedValue(throttled);
 
       const service = new GraphSharePointService();
-      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', 'tok');
+      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', constantTokenProvider);
       await flushRetries();
 
       await expect(promise).rejects.toThrow('Microsoft Graph error: 503');
@@ -336,12 +308,60 @@ describe('GraphSharePointService', () => {
       mockedAxios.get.mockResolvedValueOnce({ data: {} });
 
       const service = new GraphSharePointService();
-      await (service as any).get('https://graph.microsoft.com/v1.0/x', 'tok');
+      await (service as any).get('https://graph.microsoft.com/v1.0/x', constantTokenProvider);
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
         'https://graph.microsoft.com/v1.0/x',
         expect.objectContaining({ timeout: 15000 })
       );
+    });
+
+    // The whole reason createTokenProvider re-acquires on every call: a
+    // provider function is invoked once per retry attempt too, not cached
+    // by this layer — so a token that just expired mid-retry-loop can be
+    // refreshed by the caller's own provider on the next attempt.
+    test('calls the token provider again on each retry attempt, not just once', async () => {
+      const throttled: any = new Error('Too Many Requests');
+      throttled.response = { status: 429, headers: { 'retry-after': '1' } };
+      mockedAxios.get.mockRejectedValueOnce(throttled).mockResolvedValueOnce({ data: {} });
+      const tokenProvider = jest.fn().mockResolvedValue('tok');
+
+      const service = new GraphSharePointService();
+      const promise = (service as any).get('https://graph.microsoft.com/v1.0/x', tokenProvider);
+      await flushRetries();
+      await promise;
+
+      expect(tokenProvider).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('SSRF guard on @odata.nextLink', () => {
+    test('follows a legitimate graph.microsoft.com nextLink', async () => {
+      mockedAxios.get
+        .mockResolvedValueOnce({ data: { value: [], '@odata.nextLink': 'https://graph.microsoft.com/v1.0/next-page' } })
+        .mockResolvedValueOnce({ data: { value: [] } });
+
+      const service = new GraphSharePointService();
+      await service.listTemplateFiles(shareUrl, token);
+
+      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+      expect(mockedAxios.get).toHaveBeenNthCalledWith(2, 'https://graph.microsoft.com/v1.0/next-page', expect.anything());
+    });
+
+    test.each([
+      ['a different host entirely', 'https://evil.example.com/steal-the-token'],
+      ['a lookalike subdomain suffix', 'https://graph.microsoft.com.evil.com/x'],
+      ['plain http', 'http://graph.microsoft.com/v1.0/x'],
+      ['userinfo smuggling', 'https://graph.microsoft.com@evil.com/x'],
+    ])('refuses to follow a malicious @odata.nextLink (%s) and never fetches it', async (_label, maliciousNextLink) => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { value: [], '@odata.nextLink': maliciousNextLink } });
+
+      const service = new GraphSharePointService();
+
+      await expect(service.listTemplateFiles(shareUrl, token)).rejects.toThrow();
+      // Only the first (legitimate) call happened — the malicious nextLink
+      // was never requested.
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -659,7 +679,7 @@ describe('GraphSharePointService', () => {
       expect(files).toHaveLength(1);
       expect(files[0].docType).toBe('SVD');
       expect(skippedFolders).toEqual([
-        { relativePath: 'Denied', reason: 'This token does not have permission to read this SharePoint folder' },
+        { relativePath: 'Denied', reason: 'This account does not have permission to read this SharePoint folder' },
       ]);
     });
 
@@ -672,7 +692,7 @@ describe('GraphSharePointService', () => {
 
       const service = new GraphSharePointService();
       await expect(service.listTemplateFiles(shareUrl, token)).rejects.toThrow(
-        'Graph access token expired or invalid — paste a fresh one'
+        'Graph access token expired or invalid — please sign in again'
       );
     });
 
@@ -681,8 +701,27 @@ describe('GraphSharePointService', () => {
 
       const service = new GraphSharePointService();
       await expect(service.listTemplateFiles(shareUrl, token)).rejects.toThrow(
-        'This token does not have permission to read this SharePoint folder'
+        'This account does not have permission to read this SharePoint folder'
       );
+    });
+
+    // The core fix behind createTokenProvider: a long-running walk that
+    // spans multiple batches must re-invoke the token provider on every
+    // request, not reuse one token/credentials object captured at the
+    // start — otherwise a walk outliving a 60-90 min access token would
+    // fail partway through instead of silently refreshing.
+    test('invokes a GraphTokenProvider once per HTTP request across a multi-batch walk, not once per walk', async () => {
+      mockedAxios.get
+        .mockResolvedValueOnce({
+          data: { value: [{ id: 'folder-svd', name: 'SVD', folder: {}, parentReference: { driveId: 'drive1' } }] },
+        })
+        .mockResolvedValueOnce({ data: { value: [] } });
+      const tokenProvider = jest.fn().mockResolvedValue('graph-token');
+
+      const service = new GraphSharePointService();
+      await service.listTemplateFiles(shareUrl, tokenProvider);
+
+      expect(tokenProvider).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -692,9 +731,9 @@ describe('GraphSharePointService', () => {
       mockedAxios.get.mockResolvedValueOnce({ data: payload });
 
       const service = new GraphSharePointService();
-      const result = await service.downloadFile('https://download.example/precise-url');
+      const result = await service.downloadFile('https://contoso.sharepoint.com/download/precise-url');
 
-      expect(mockedAxios.get).toHaveBeenCalledWith('https://download.example/precise-url', {
+      expect(mockedAxios.get).toHaveBeenCalledWith('https://contoso.sharepoint.com/download/precise-url', {
         responseType: 'arraybuffer',
       });
       expect(Buffer.isBuffer(result)).toBe(true);
@@ -704,7 +743,7 @@ describe('GraphSharePointService', () => {
     test('refuses a non-https download URL', async () => {
       const service = new GraphSharePointService();
 
-      await expect(service.downloadFile('http://download.example/precise-url')).rejects.toThrow(
+      await expect(service.downloadFile('http://contoso.sharepoint.com/download/precise-url')).rejects.toThrow(
         'Refusing to fetch a non-https download URL'
       );
       expect(mockedAxios.get).not.toHaveBeenCalled();
@@ -721,5 +760,14 @@ describe('GraphSharePointService', () => {
         expect(mockedAxios.get).not.toHaveBeenCalled();
       }
     );
+
+    test('refuses a download URL from an unrecognized (non-Microsoft) host', async () => {
+      const service = new GraphSharePointService();
+
+      await expect(service.downloadFile('https://evil.example.com/precise-url')).rejects.toThrow(
+        'Refusing to fetch a download URL from an unrecognized host'
+      );
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+    });
   });
 });

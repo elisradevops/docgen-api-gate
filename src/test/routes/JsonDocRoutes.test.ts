@@ -764,4 +764,82 @@ describe('JsonDocRoutes', () => {
     expect(sp.getAllConfigs).toHaveBeenCalled();
     expect(sp.resolveUrl).toHaveBeenCalled();
   });
+
+  describe('CORS fail-closed behavior', () => {
+    const previousCorsEnv = process.env.CORS_ALLOWED_ORIGINS;
+
+    afterEach(() => {
+      if (previousCorsEnv === undefined) {
+        delete process.env.CORS_ALLOWED_ORIGINS;
+      } else {
+        process.env.CORS_ALLOWED_ORIGINS = previousCorsEnv;
+      }
+    });
+
+    // Regression: this codebase previously treated an unset
+    // CORS_ALLOWED_ORIGINS as "allow every origin" (reflecting whatever
+    // Origin header the request carried). That default became a
+    // session-theft hole once credentials:true was added for the new
+    // SharePoint OAuth session cookie — a cross-origin page could otherwise
+    // ride an authenticated user's session. It must now deny by default.
+    test('blocks a cross-origin request when CORS_ALLOWED_ORIGINS is unset', async () => {
+      delete process.env.CORS_ALLOWED_ORIGINS;
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent.get('/jsonDocument').set('Origin', 'https://untrusted.example.com');
+        expect(res.status).toBe(500);
+        expect(res.headers['access-control-allow-origin']).toBeUndefined();
+      });
+    });
+
+    test('blocks an origin not present in the allowlist', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent.get('/jsonDocument').set('Origin', 'https://untrusted.example.com');
+        expect(res.status).toBe(500);
+        expect(res.headers['access-control-allow-origin']).toBeUndefined();
+      });
+    });
+
+    test('allows an origin present in the allowlist and echoes it back with credentials enabled', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent.get('/jsonDocument').set('Origin', 'https://docgen.example.com');
+        expect(res.status).toBe(200);
+        expect(res.headers['access-control-allow-origin']).toBe('https://docgen.example.com');
+        expect(res.headers['access-control-allow-credentials']).toBe('true');
+      });
+    });
+
+    test('still allows a request with no Origin header at all (server-to-server / curl)', async () => {
+      delete process.env.CORS_ALLOWED_ORIGINS;
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent.get('/jsonDocument');
+        expect(res.status).toBe(200);
+      });
+    });
+
+    test('preflight succeeds for the Authorization and X-Csrf-Token headers needed by the new auth flow', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent
+          .options('/sharepoint/list-files')
+          .set('Origin', 'https://docgen.example.com')
+          .set('Access-Control-Request-Method', 'POST')
+          .set('Access-Control-Request-Headers', 'Authorization, X-Csrf-Token');
+        expect(res.status).toBe(204);
+        expect(res.headers['access-control-allow-headers']).toEqual(expect.stringContaining('Authorization'));
+        expect(res.headers['access-control-allow-headers']).toEqual(expect.stringContaining('X-Csrf-Token'));
+      });
+    });
+  });
 });

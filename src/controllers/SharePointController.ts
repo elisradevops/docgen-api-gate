@@ -1,9 +1,19 @@
 import { Request, Response } from 'express';
-import { SharePointService, SharePointConfig as SharePointConfigType } from '../services/SharePointService';
+import {
+  SharePointService,
+  SharePointConfig as SharePointConfigType,
+  SharePointCredentials,
+  isSharePointOnlineUrl,
+} from '../services/SharePointService';
 import { MinioController } from './MinioController';
 import logger from '../util/logger';
 import { getMinioFiles } from '../helpers/sharePointHelpers/sharePointHelper';
 import { SharePointConfig as ConfigModel } from '../models/SharePointConfig';
+import { createTokenProvider, GraphTokenProvider } from '../services/auth/MsalClientService';
+import { classifySharePointUrl } from '../util/sharePointLinkClassifier';
+
+type ResolvedAuth = SharePointCredentials | GraphTokenProvider;
+type AuthResolution = { auth: ResolvedAuth } | { error: { status: number; message: string } };
 
 // Kept in sync with the toast in TemplatesTab.jsx and docs/wiki/SharePoint_Sync_Guide.txt.
 // 'MEETING-SUMMARY' matches MEETING_SUMMARY_DOC_TYPE in meetingSummaryUtils.js — the
@@ -25,25 +35,65 @@ export class SharePointController {
   }
 
   /**
+   * Turns a request's body/session into the auth value SharePointService
+   * needs. Online authenticates exclusively via the BFF session
+   * (attachSessionIfPresent populates req.spSession — see JsonDocRoutes.ts);
+   * a client-supplied `oauthToken` is rejected outright, never silently
+   * ignored. On-prem NTLM is untouched: `credentials` in the body, no
+   * session, since these routes are dual-purpose and on-prem callers never
+   * authenticate via /auth/login.
+   */
+  private resolveAuth(req: Request, siteUrl: string): AuthResolution {
+    const { credentials, oauthToken } = req.body;
+
+    if (oauthToken) {
+      return { error: { status: 400, message: 'oauth_token_not_accepted' } };
+    }
+
+    if (isSharePointOnlineUrl(siteUrl)) {
+      const session = (req as any).spSession as { homeAccountId: string } | undefined;
+      if (!session) {
+        return { error: { status: 401, message: 'reauth_required' } };
+      }
+      return { auth: createTokenProvider(session.homeAccountId) };
+    }
+
+    if (!credentials) {
+      return { error: { status: 400, message: 'Missing required fields' } };
+    }
+    return { auth: credentials };
+  }
+
+  /**
    * Test SharePoint connection
    * POST /sharepoint/test-connection
-   * Body: { siteUrl, library, folder, credentials?: { username, password, domain? }, oauthToken?: { accessToken } }
+   * Body: { siteUrl, library, folder, credentials?: { username, password, domain? } } — Online authenticates via the BFF session, not a body field.
    */
   public async testConnection(req: Request, res: Response): Promise<void> {
     try {
-      const { siteUrl, library, folder, credentials, oauthToken } = req.body;
+      const { siteUrl, library, folder } = req.body;
+
+      if (!siteUrl) {
+        res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      const authResult = this.resolveAuth(req, siteUrl);
+      if ('error' in authResult) {
+        res.status(authResult.error.status).json({ success: false, message: authResult.error.message });
+        return;
+      }
 
       // library/folder are only meaningful for on-prem (NTLM) configs — an
       // Online config's siteUrl is itself the pasted sharing/folder link,
       // so library/folder are legitimately empty there.
-      if (!siteUrl || (!credentials && !oauthToken) || (!oauthToken && !folder)) {
+      if (!isSharePointOnlineUrl(siteUrl) && !folder) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
 
       const config: SharePointConfigType = { siteUrl, library, folder };
-      const auth = oauthToken || credentials;
-      const result = await this.sharePointService.testConnection(config, auth);
+      const result = await this.sharePointService.testConnection(config, authResult.auth);
 
       res.status(200).json(result);
     } catch (error: any) {
@@ -82,20 +132,33 @@ export class SharePointController {
   /**
    * List template files from SharePoint folder
    * POST /sharepoint/list-files
-   * Body: { siteUrl, library, folder, credentials?, oauthToken? }
+   * Body: { siteUrl, library, folder, credentials? } — Online authenticates via the BFF session, not a body field.
    */
   public async listFiles(req: Request, res: Response): Promise<void> {
     try {
-      const { siteUrl, library, folder, credentials, oauthToken } = req.body;
+      const { siteUrl, library, folder } = req.body;
 
-      if (!siteUrl || (!credentials && !oauthToken) || (!oauthToken && !folder)) {
+      if (!siteUrl) {
+        res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      const authResult = this.resolveAuth(req, siteUrl);
+      if ('error' in authResult) {
+        res.status(authResult.error.status).json({ success: false, message: authResult.error.message });
+        return;
+      }
+
+      if (!isSharePointOnlineUrl(siteUrl) && !folder) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
 
       const config: SharePointConfigType = { siteUrl, library, folder };
-      const auth = oauthToken || credentials;
-      const { files, truncated, skippedFolders = [] } = await this.sharePointService.listTemplateFiles(config, auth);
+      const { files, truncated, skippedFolders = [] } = await this.sharePointService.listTemplateFiles(
+        config,
+        authResult.auth
+      );
       if (skippedFolders.length > 0) {
         logger.warn(`Skipped ${skippedFolders.length} inaccessible folder(s) while listing files`);
       }
@@ -110,20 +173,24 @@ export class SharePointController {
   /**
    * Check for file conflicts before syncing
    * POST /sharepoint/check-conflicts
-   * Body: { siteUrl, library, folder, credentials?, oauthToken?, bucketName, projectName, docType }
+   * Body: { siteUrl, library, folder, credentials?, bucketName, projectName, docType } — Online authenticates via the BFF session, not a body field.
    */
   public async checkConflicts(req: Request, res: Response): Promise<void> {
     try {
-      const { siteUrl, library, folder, credentials, oauthToken, bucketName, projectName, docType, docTypeOverrides } =
-        req.body;
+      const { siteUrl, library, folder, bucketName, projectName, docType, docTypeOverrides } = req.body;
 
-      if (
-        !siteUrl ||
-        (!credentials && !oauthToken) ||
-        (!oauthToken && !folder) ||
-        !bucketName ||
-        !projectName
-      ) {
+      if (!siteUrl || !bucketName || !projectName) {
+        res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      const authResult = this.resolveAuth(req, siteUrl);
+      if ('error' in authResult) {
+        res.status(authResult.error.status).json({ success: false, message: authResult.error.message });
+        return;
+      }
+
+      if (!isSharePointOnlineUrl(siteUrl) && !folder) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
@@ -139,7 +206,6 @@ export class SharePointController {
       }
 
       const config: SharePointConfigType = { siteUrl, library, folder };
-      const auth = oauthToken || credentials;
 
       // Get files from SharePoint, recursively (includes docType from the
       // immediate parent folder name, when there is one)
@@ -147,7 +213,7 @@ export class SharePointController {
         files: spFiles,
         truncated,
         skippedFolders = [],
-      } = await this.sharePointService.listTemplateFiles(config, auth);
+      } = await this.sharePointService.listTemplateFiles(config, authResult.auth);
       logger.info(`Checking ${spFiles.length} SharePoint files for conflicts${truncated ? ' (listing truncated)' : ''}`);
       if (skippedFolders.length > 0) {
         logger.warn(`Skipped ${skippedFolders.length} inaccessible folder(s) while checking conflicts`);
@@ -259,30 +325,25 @@ export class SharePointController {
   /**
    * Sync templates from SharePoint to MinIO
    * POST /sharepoint/sync-templates
-   * Body: { siteUrl, library, folder, credentials?, oauthToken?, bucketName, projectName, docType, skipFiles? }
+   * Body: { siteUrl, library, folder, credentials?, bucketName, projectName, docType, skipFiles? } — Online authenticates via the BFF session, not a body field.
    */
   public async syncTemplates(req: Request, res: Response): Promise<void> {
     try {
-      const {
-        siteUrl,
-        library,
-        folder,
-        credentials,
-        oauthToken,
-        bucketName,
-        projectName,
-        docType,
-        skipFiles,
-        docTypeOverrides,
-      } = req.body;
+      const { siteUrl, library, folder, bucketName, projectName, docType, skipFiles, docTypeOverrides } = req.body;
 
-      if (
-        !siteUrl ||
-        (!credentials && !oauthToken) ||
-        (!oauthToken && !folder) ||
-        !bucketName ||
-        !projectName
-      ) {
+      if (!siteUrl || !bucketName || !projectName) {
+        res.status(400).json({ success: false, message: 'Missing required fields' });
+        return;
+      }
+
+      const authResult = this.resolveAuth(req, siteUrl);
+      if ('error' in authResult) {
+        res.status(authResult.error.status).json({ success: false, message: authResult.error.message });
+        return;
+      }
+      const auth = authResult.auth;
+
+      if (!isSharePointOnlineUrl(siteUrl) && !folder) {
         res.status(400).json({ success: false, message: 'Missing required fields' });
         return;
       }
@@ -298,7 +359,6 @@ export class SharePointController {
       }
 
       const config: SharePointConfigType = { siteUrl, library, folder };
-      const auth = oauthToken || credentials;
 
       // Get all template files from SharePoint, recursively
       const {
@@ -587,7 +647,23 @@ export class SharePointController {
         // Update last used
         config.lastUsed = new Date();
         await config.save();
-        res.status(200).json({ success: true, config });
+
+        // A row already confirmed (authType + linkResolvedAt persisted, e.g.
+        // from a prior successful sync) is trusted as-is; anything else is
+        // classified fresh on every read. Optimistic, not authoritative —
+        // only testConnection's actual /shares resolution can truly confirm
+        // or invalidate it.
+        const classification = config.authType && config.linkResolvedAt
+          ? 'trusted'
+          : classifySharePointUrl({ siteUrl: config.siteUrl, library: config.library, folder: config.folder });
+        const requiresRelink = classification === 'online-legacy-site-path';
+
+        res.status(200).json({
+          success: true,
+          config,
+          requiresRelink,
+          relinkReason: requiresRelink ? 'legacy-site-path' : null,
+        });
       } else {
         res.status(404).json({ success: false, message: 'No configuration found' });
       }

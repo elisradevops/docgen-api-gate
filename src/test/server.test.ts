@@ -37,6 +37,26 @@ describe('server bootstrap', () => {
     process.env.MINIO_ROOT_PASSWORD = 'pass';
     process.env.MINIO_REGION = 'eu';
     process.env.MINIO_ENDPOINT = 'http://minio';
+    // Required by assertAuthConfig(), now called before connectToDatabase().
+    process.env.CLIENT_ID = 'client-123';
+    process.env.TENANT_ID = 'tenant-456';
+    process.env.CLIENT_SECRET = 'secret-789';
+    process.env.REDIRECT_URI = 'http://localhost:4000/auth/callback';
+    process.env.SESSION_SECRET = 'a'.repeat(32);
+  });
+
+  test('logs error and exits when the auth config is invalid, without attempting a DB connection', async () => {
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
+    delete process.env.CLIENT_SECRET;
+    const connectMock = getConnectMock();
+
+    await import('../server');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(connectMock).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
   });
 
   test('starts server after successful DB connection', async () => {

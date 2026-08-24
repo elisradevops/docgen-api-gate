@@ -92,6 +92,26 @@ describe('SharePointService', () => {
       expect(result).toEqual({ success: true, message: 'ok via graph' });
     });
 
+    // The BFF session flow passes a GraphTokenProvider closure instead of a
+    // plain { accessToken } object — isTokenBased() must recognize both
+    // shapes as OAuth/Graph-bound, not just the legacy object shape.
+    test('also delegates to GraphSharePointService when given a GraphTokenProvider function instead of a plain token object', async () => {
+      const service = new SharePointService();
+      const onlineConfig: SharePointConfig = {
+        ...baseConfig,
+        siteUrl: 'https://tenant.sharepoint.com/:f:/s/site/shareToken',
+      };
+      const tokenProvider = async () => 'provider-issued-token';
+      const graphSpy = (jest as any)
+        .spyOn((service as any).graphService, 'testShareAccess')
+        .mockResolvedValueOnce({ success: true, message: 'ok via graph' });
+
+      const result = await service.testConnection(onlineConfig, tokenProvider);
+
+      expect(graphSpy).toHaveBeenCalledWith(onlineConfig.siteUrl, tokenProvider);
+      expect(result).toEqual({ success: true, message: 'ok via graph' });
+    });
+
     test('returns success when NTLM request returns 200', async () => {
       const service = new SharePointService();
       const ntlmSpy = (jest as any)

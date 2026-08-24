@@ -11,6 +11,11 @@ export interface ISharePointConfig extends Document {
   folder?: string; // Folder path within library — blank for Online configs (the whole location is siteUrl)
   displayName?: string; // Friendly name for UI
   lastUsed?: Date; // Track when last used
+  // Relink-migration discriminator (see SharePointController.getConfig and
+  // sharePointLinkClassifier.ts) — optional, so pre-existing rows stay valid.
+  authType?: 'onprem' | 'online';
+  requiresRelink?: boolean; // sticky: set once a saved Online link is proven unresolvable via /shares
+  linkResolvedAt?: Date; // last successful resolution — the "confirmed" marker
   createdAt: Date;
   updatedAt: Date;
 }
@@ -32,6 +37,9 @@ const SharePointConfigSchema = new Schema(
     folder: { type: String, required: false },
     displayName: { type: String, required: false },
     lastUsed: { type: Date, default: Date.now },
+    authType: { type: String, required: false, enum: ['onprem', 'online'] },
+    requiresRelink: { type: Boolean, required: false, default: false },
+    linkResolvedAt: { type: Date, required: false },
   },
   {
     timestamps: true,
