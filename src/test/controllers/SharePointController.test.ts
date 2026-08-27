@@ -10,10 +10,20 @@ const mockSvc = {
   testConnection: jest.fn(),
   listTemplateFiles: jest.fn(),
   downloadFile: jest.fn(),
+  resolveSiteFromUrl: jest.fn(),
 };
 
 jest.mock('../../services/SharePointService', () => ({
   SharePointService: jest.fn().mockImplementation(() => mockSvc),
+  isSharePointOnlineUrl: (siteUrl: string) => siteUrl.toLowerCase().includes('.sharepoint.com'),
+}));
+
+// Keeps this file from pulling in the real @azure/msal-node -> mongoose
+// chain (via MsalClientService -> MongoTokenCachePlugin -> the MsalTokenCache
+// model) — these tests exercise SharePointController's own routing logic,
+// not token acquisition, which is covered by MsalClientService's own tests.
+jest.mock('../../services/auth/MsalClientService', () => ({
+  createTokenProvider: jest.fn(() => jest.fn().mockResolvedValue('mock-graph-token')),
 }));
 
 const mockGetMinioFiles = jest.fn();
@@ -75,7 +85,7 @@ describe('SharePointController', () => {
      */
     test('200 on success', async () => {
       const req: any = {
-        body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } },
+        body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } },
       };
       const res = buildRes();
       mockSvc.testConnection.mockResolvedValueOnce({ success: true });
@@ -86,13 +96,192 @@ describe('SharePointController', () => {
 
     test('500 on service error', async () => {
       const req: any = {
-        body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } },
+        body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } },
       };
       const res = buildRes();
       mockSvc.testConnection.mockRejectedValueOnce(new Error('tc-fail'));
       await controller.testConnection(req, res);
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.body).toEqual({ success: false, message: 'tc-fail' });
+    });
+
+    // Regression: an Online config's whole location lives in siteUrl (the
+    // pasted sharing/folder link) — library/folder are legitimately blank,
+    // and the request must not be rejected for that reason when a session
+    // is present. This was a real bug: the blanket `!library || !folder`
+    // check 400'd every Online request silently (no log line at all,
+    // before the handler's own logging ever ran), so Online sync appeared
+    // to just not connect.
+    test('200 with a session even when library/folder are empty (Online config)', async () => {
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '' },
+        spSession: { homeAccountId: 'home-1' },
+      };
+      const res = buildRes();
+      mockSvc.testConnection.mockResolvedValueOnce({ success: true });
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    test('400 with NTLM credentials when folder is empty (on-prem still needs a folder)', async () => {
+      const req: any = {
+        body: { siteUrl: 'http://sp-server/sites/project', library: '', folder: '', credentials: { username: 'u', password: 'p' } },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockSvc.testConnection).not.toHaveBeenCalled();
+    });
+
+    test('200 with NTLM credentials when library is empty but folder is set (paste-a-URL on-prem config)', async () => {
+      const req: any = {
+        body: {
+          siteUrl: 'http://sp-server/sites/project',
+          library: '',
+          folder: 'Shared Documents/Templates',
+          credentials: { username: 'u', password: 'p' },
+        },
+      };
+      const res = buildRes();
+      mockSvc.testConnection.mockResolvedValueOnce({ success: true });
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+  });
+
+  describe('resolveAuth (hard cutover — Online authenticates via session only)', () => {
+    test('explicitly rejects a client-supplied oauthToken with 400 oauth_token_not_accepted, never silently ignoring it', async () => {
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '', oauthToken: { accessToken: 't' } },
+        spSession: { homeAccountId: 'home-1' },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({ success: false, message: 'oauth_token_not_accepted' });
+      expect(mockSvc.testConnection).not.toHaveBeenCalled();
+    });
+
+    test('rejects oauthToken even for an on-prem siteUrl (not just Online)', async () => {
+      const req: any = {
+        body: { siteUrl: 'http://sp-server/sites/project', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({ success: false, message: 'oauth_token_not_accepted' });
+    });
+
+    test('an Online request with no session at all gets 401 reauth_required', async () => {
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '' },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.body).toEqual({ success: false, message: 'reauth_required' });
+      expect(mockSvc.testConnection).not.toHaveBeenCalled();
+    });
+
+    test('an Online request with a session uses a fresh GraphTokenProvider, never a client-supplied token', async () => {
+      const { createTokenProvider } = require('../../services/auth/MsalClientService');
+      const req: any = {
+        body: { siteUrl: 'https://tenant.sharepoint.com/:f:/r/x', library: '', folder: '' },
+        spSession: { homeAccountId: 'home-1' },
+      };
+      const res = buildRes();
+      mockSvc.testConnection.mockResolvedValueOnce({ success: true });
+
+      await controller.testConnection(req, res);
+
+      expect(createTokenProvider).toHaveBeenCalledWith('home-1');
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    test('on-prem requests are unaffected — still just need credentials, no session required', async () => {
+      const req: any = {
+        body: {
+          siteUrl: 'http://sp-server/sites/project',
+          library: 'l',
+          folder: 'f',
+          credentials: { username: 'u', password: 'p' },
+        },
+      };
+      const res = buildRes();
+      mockSvc.testConnection.mockResolvedValueOnce({ success: true });
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockSvc.testConnection).toHaveBeenCalledWith(expect.anything(), { username: 'u', password: 'p' });
+    });
+
+    test('an on-prem request with no credentials and no session still gets Missing required fields, not reauth_required', async () => {
+      const req: any = {
+        body: { siteUrl: 'http://sp-server/sites/project', library: 'l', folder: 'f' },
+      };
+      const res = buildRes();
+
+      await controller.testConnection(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({ success: false, message: 'Missing required fields' });
+    });
+  });
+
+  describe('resolveUrl', () => {
+    test('400 on missing fields', async () => {
+      const req: any = { body: {} };
+      const res = buildRes();
+      await controller.resolveUrl(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    test('200 on success', async () => {
+      const req: any = {
+        body: { url: 'http://sp-server/sites/project/Templates', credentials: { username: 'u', password: 'p' } },
+      };
+      const res = buildRes();
+      mockSvc.resolveSiteFromUrl.mockResolvedValueOnce({
+        siteUrl: 'http://sp-server/sites/project',
+        library: '',
+        folder: 'Templates',
+      });
+
+      await controller.resolveUrl(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body).toEqual({
+        success: true,
+        siteUrl: 'http://sp-server/sites/project',
+        library: '',
+        folder: 'Templates',
+      });
+    });
+
+    test('500 on service error', async () => {
+      const req: any = {
+        body: { url: 'http://sp-server/sites/project/Templates', credentials: { username: 'u', password: 'p' } },
+      };
+      const res = buildRes();
+      mockSvc.resolveSiteFromUrl.mockRejectedValueOnce(new Error('resolve-fail'));
+
+      await controller.resolveUrl(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.body).toEqual({ success: false, message: 'resolve-fail' });
     });
   });
 
@@ -112,24 +301,78 @@ describe('SharePointController', () => {
      */
     test('200 on success', async () => {
       const res = buildRes();
-      mockSvc.listTemplateFiles.mockResolvedValueOnce([{ name: 'a' }]);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [{ name: 'a' }], truncated: false });
       await controller.listFiles(
-        { body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } } } as any,
+        { body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } } } as any,
         res
       );
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.body).toEqual({ success: true, files: [{ name: 'a' }] });
+      expect(res.body).toEqual({ success: true, files: [{ name: 'a' }], truncated: false, skippedFolders: [] });
     });
 
     test('500 on service error', async () => {
       const res = buildRes();
       mockSvc.listTemplateFiles.mockRejectedValueOnce(new Error('list-fail'));
       await controller.listFiles(
-        { body: { siteUrl: 'u', library: 'l', folder: 'f', oauthToken: { accessToken: 't' } } } as any,
+        { body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } } } as any,
         res
       );
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.body).toEqual({ success: false, message: 'list-fail' });
+    });
+
+    // Regression: an expired/invalid Graph token is an expected client-side
+    // condition, not a server error — it must not read as a 500.
+    test('401 when the underlying error carries a status (expired token)', async () => {
+      const res = buildRes();
+      const expiredTokenError: any = new Error('Graph access token expired or invalid — paste a fresh one');
+      expiredTokenError.status = 401;
+      mockSvc.listTemplateFiles.mockRejectedValueOnce(expiredTokenError);
+      await controller.listFiles(
+        { body: { siteUrl: 'u', library: 'l', folder: 'f', credentials: { username: 'u', password: 'p' } } } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.body).toEqual({
+        success: false,
+        message: 'Graph access token expired or invalid — paste a fresh one',
+      });
+    });
+
+    // Regression: this exact request shape (Online, no library/folder) was
+    // silently rejected with 400 before the fix — the actual bug found when
+    // testing the real "Sync from SharePoint" flow end to end.
+    test('200 with a session even when library/folder are empty (Online config)', async () => {
+      const res = buildRes();
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [{ name: 'SVD-template.docx' }], truncated: false });
+      await controller.listFiles(
+        {
+          body: {
+            siteUrl: 'https://tenant.sharepoint.com/:f:/r/teams/x/Shared Documents/DocGen Templates',
+            library: '',
+            folder: '',
+          },
+          spSession: { homeAccountId: 'home-1' },
+        } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body).toEqual({
+        success: true,
+        files: [{ name: 'SVD-template.docx' }],
+        truncated: false,
+        skippedFolders: [],
+      });
+    });
+
+    test('400 with NTLM credentials when folder is empty', async () => {
+      const res = buildRes();
+      await controller.listFiles(
+        { body: { siteUrl: 'http://sp-server/sites/project', library: '', folder: '', credentials: { username: 'u', password: 'p' } } } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockSvc.listTemplateFiles).not.toHaveBeenCalled();
     });
   });
 
@@ -143,17 +386,42 @@ describe('SharePointController', () => {
       await controller.checkConflicts({ body: {} } as any, res);
       expect(res.status).toHaveBeenCalledWith(400);
     });
+
+    // Regression: 'shared' (standard templates library) is not a valid sync
+    // target — must be rejected server-side, not just hidden in the UI.
+    test('400 when projectName is "shared"', async () => {
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'shared',
+          },
+        } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({
+        success: false,
+        message: 'A team project must be selected to sync templates',
+      });
+      expect(mockSvc.listTemplateFiles).not.toHaveBeenCalled();
+    });
     /**
      * checkConflicts (computes conflict/new/invalid)
      * Aggregates SharePoint and MinIO results to identify conflicts, new files, and invalid files by docType.
      */
-    test('returns conflicts, newFiles, invalidFiles', async () => {
+    test('returns conflicts, newFiles (including a needs-mapping row for an unrecognized docType)', async () => {
       const files = [
-        { name: 'STD/file1.dotx', length: 10, docType: 'STD' },
-        { name: 'BAD/file2.dotx', length: 20, docType: 'BAD' },
-        { name: 'STR/file3.dotx', length: 30, docType: 'STR' },
+        { name: 'STD/file1.dotx', length: 10, docType: 'STD', relativePath: 'STD/file1.dotx' },
+        { name: 'BAD/file2.dotx', length: 20, docType: 'BAD', relativePath: 'BAD/file2.dotx' },
+        { name: 'STR/file3.dotx', length: 30, docType: 'STR', relativePath: 'STR/file3.dotx' },
       ];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 99 }]); // cause conflict by size change
       mockGetMinioFiles.mockResolvedValueOnce([]); // for STR
 
@@ -164,7 +432,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -174,13 +442,117 @@ describe('SharePointController', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.conflicts.length).toBe(1);
-      expect(res.body.newFiles.length).toBe(1);
-      expect(res.body.invalidFiles.length).toBe(1);
+      // BAD/file2.dotx has an unrecognized docType — it's no longer
+      // hard-rejected into invalidFiles, it's surfaced as a reviewable row
+      // (needsDocType: true) so the dialog can let the user map it.
+      expect(res.body.newFiles.length).toBe(2);
+      expect(res.body.newFiles).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'BAD/file2.dotx', docType: '', needsDocType: true })])
+      );
+      expect(res.body.invalidFiles.length).toBe(0);
+    });
+
+    test('defaults skippedFolders to [] when the service returns none', async () => {
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files: [], truncated: false });
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.skippedFolders).toEqual([]);
+    });
+
+    test('echoes skippedFolders from the service in the response', async () => {
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({
+        files: [],
+        truncated: false,
+        skippedFolders: [{ relativePath: 'Denied', reason: 'Access is denied.' }],
+      });
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.skippedFolders).toEqual([{ relativePath: 'Denied', reason: 'Access is denied.' }]);
+    });
+
+    test('forwards timeCreated/timeLastModified onto both conflicts and newFiles entries', async () => {
+      const files = [
+        {
+          name: 'STD/file1.dotx',
+          length: 10,
+          docType: 'STD',
+          timeCreated: '2023-12-01T00:00:00Z',
+          timeLastModified: '2024-01-01T00:00:00Z',
+        },
+        {
+          name: 'STR/file2.dotx',
+          length: 30,
+          docType: 'STR',
+          timeCreated: '2023-11-01T00:00:00Z',
+          timeLastModified: '2023-12-15T00:00:00Z',
+        },
+      ];
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
+      mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 99 }]); // conflict (size changed)
+      mockGetMinioFiles.mockResolvedValueOnce([]); // STR — new
+
+      const res = buildRes();
+      await controller.checkConflicts(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.conflicts).toEqual([
+        expect.objectContaining({
+          name: 'STD/file1.dotx',
+          timeCreated: '2023-12-01T00:00:00Z',
+          timeLastModified: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+      expect(res.body.newFiles).toEqual([
+        expect.objectContaining({
+          name: 'STR/file2.dotx',
+          timeCreated: '2023-11-01T00:00:00Z',
+          timeLastModified: '2023-12-15T00:00:00Z',
+        }),
+      ]);
     });
 
     test('accepts STP as a valid docType (not invalid)', async () => {
       const files = [{ name: 'STP/stp-template.dotx', length: 12, docType: 'STP' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
 
       const res = buildRes();
@@ -190,7 +562,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -207,7 +579,7 @@ describe('SharePointController', () => {
 
     test('accepts SYSRS as a valid docType (not invalid)', async () => {
       const files = [{ name: 'SYSRS/sysrs-template.dotx', length: 14, docType: 'SYSRS' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
 
       const res = buildRes();
@@ -217,7 +589,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -234,7 +606,7 @@ describe('SharePointController', () => {
 
     test('skips identical files without conflicts or new files', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 10 }]);
 
       const res = buildRes();
@@ -244,7 +616,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -267,7 +639,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -289,20 +661,45 @@ describe('SharePointController', () => {
       await controller.syncTemplates({ body: {} } as any, res);
       expect(res.status).toHaveBeenCalledWith(400);
     });
+
+    // Regression: 'shared' (standard templates library) is not a valid sync
+    // target — must be rejected server-side, not just hidden in the UI.
+    test('400 when projectName is "shared"', async () => {
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'shared',
+          },
+        } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.body).toEqual({
+        success: false,
+        message: 'A team project must be selected to sync templates',
+      });
+      expect(mockSvc.listTemplateFiles).not.toHaveBeenCalled();
+    });
     /**
      * syncTemplates (skip identical, upload changed)
      * Skips identical templates and uploads only changed ones; responds with synced and skipped lists.
      */
     test('skips identical and uploads others', async () => {
       const files = [
-        { name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x' },
-        { name: 'STR/file2.dotx', length: 20, docType: 'STR', serverRelativeUrl: '/y' },
+        { name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x', relativePath: 'STD/file1.dotx' },
+        { name: 'STR/file2.dotx', length: 20, docType: 'STR', serverRelativeUrl: '/y', relativePath: 'STR/file2.dotx' },
       ];
       mockSvc.listTemplateFiles.mockReset();
       mockGetMinioFiles.mockReset();
       mockSvc.downloadFile.mockReset();
       // First get list
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       // Identical check calls per file
       mockGetMinioFiles.mockResolvedValueOnce([{ name: 'project/STD/file1.dotx', size: 10 }]); // identical -> skip
       mockGetMinioFiles.mockResolvedValueOnce([]); // STR -> not identical
@@ -316,7 +713,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -327,11 +724,119 @@ describe('SharePointController', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.body.syncedFiles).toEqual(['STR/file2.dotx']);
       expect(res.body.skippedFiles).toContain('STD/file1.dotx');
+      expect(res.body.skippedFolders).toEqual([]);
+    });
+
+    test('fails the second of two files that would collide at the same MinIO destination (duplicate basename, same docType, different source folders)', async () => {
+      // Recursion permits the same basename under two different SharePoint
+      // folders — if both map to the same docType, they'd both write to
+      // bucket/project/STD/template.dotx. Only the first should sync; the
+      // second must be reported in failedFiles, not silently overwrite it.
+      const files = [
+        { name: 'template.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/a', relativePath: 'FolderA/template.dotx' },
+        { name: 'template.dotx', length: 20, docType: 'STD', serverRelativeUrl: '/b', relativePath: 'FolderB/template.dotx' },
+      ];
+      mockSvc.listTemplateFiles.mockReset();
+      mockGetMinioFiles.mockReset();
+      mockSvc.downloadFile.mockReset();
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
+      // Identical-file check runs over both files before duplicate-destination detection.
+      mockGetMinioFiles.mockResolvedValueOnce([]); // FolderA/template.dotx
+      mockGetMinioFiles.mockResolvedValueOnce([]); // FolderB/template.dotx
+      mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd')); // only the kept (first) file downloads
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.syncedFiles).toEqual(['template.dotx']);
+      expect(mockSvc.downloadFile).toHaveBeenCalledTimes(1);
+      expect(res.body.failedFiles).toHaveLength(1);
+      expect(res.body.failedFiles[0].name).toBe('template.dotx');
+      expect(res.body.failedFiles[0].error).toContain('same destination');
+      expect(res.body.failedFiles[0].error).toContain('FolderA/template.dotx');
+    });
+
+    test('echoes skippedFolders from the service in the sync response', async () => {
+      mockSvc.listTemplateFiles.mockReset();
+      mockGetMinioFiles.mockReset();
+      mockSvc.downloadFile.mockReset();
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({
+        files: [],
+        truncated: false,
+        skippedFolders: [{ relativePath: 'Denied', reason: 'Access is denied.' }],
+      });
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect(res.body.skippedFolders).toEqual([{ relativePath: 'Denied', reason: 'Access is denied.' }]);
+    });
+
+    test('forwards SharePoint timeLastModified into the MinIO upload body', async () => {
+      const files = [
+        {
+          name: 'STD/file1.dotx',
+          length: 10,
+          docType: 'STD',
+          serverRelativeUrl: '/x',
+          timeLastModified: '2024-05-01T10:00:00Z',
+        },
+      ];
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
+      mockGetMinioFiles.mockResolvedValueOnce([]);
+      mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
+
+      const res = buildRes();
+      await controller.syncTemplates(
+        {
+          body: {
+            siteUrl: 'u',
+            library: 'l',
+            folder: 'f',
+            credentials: { username: 'u', password: 'p' },
+            bucketName: 'templates',
+            projectName: 'project',
+          },
+        } as any,
+        res
+      );
+
+      expect((MinioController.prototype as any).uploadFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ sourceLastModified: '2024-05-01T10:00:00Z' }),
+        }),
+        expect.anything()
+      );
     });
 
     test('uploads STP files without docType validation failure', async () => {
       const files = [{ name: 'STP/stp-template.dotx', length: 20, docType: 'STP', serverRelativeUrl: '/z' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('stp'));
 
@@ -342,7 +847,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -364,7 +869,7 @@ describe('SharePointController', () => {
           serverRelativeUrl: '/sysrs',
         },
       ];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('sysrs'));
 
@@ -375,7 +880,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -390,7 +895,7 @@ describe('SharePointController', () => {
 
     test('handles getMinioFiles error when checking identical', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockRejectedValueOnce(new Error('minio-check-fail'));
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -401,7 +906,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -415,7 +920,7 @@ describe('SharePointController', () => {
 
     test('marks file as failed when no docType available', async () => {
       const files = [{ name: 'noDoc/file1.dotx', length: 10, docType: undefined, serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -426,7 +931,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -440,7 +945,7 @@ describe('SharePointController', () => {
 
     test('marks file as failed when docType is invalid', async () => {
       const files = [{ name: 'BAD/file1.dotx', length: 10, docType: 'BAD', serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -451,7 +956,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -465,7 +970,7 @@ describe('SharePointController', () => {
 
     test('records failedFiles entry when upload fails', async () => {
       const files = [{ name: 'STD/file1.dotx', length: 10, docType: 'STD', serverRelativeUrl: '/x' }];
-      mockSvc.listTemplateFiles.mockResolvedValueOnce(files);
+      mockSvc.listTemplateFiles.mockResolvedValueOnce({ files, truncated: false });
       mockGetMinioFiles.mockResolvedValueOnce([]);
       mockSvc.downloadFile.mockResolvedValueOnce(Buffer.from('abcd'));
 
@@ -479,7 +984,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -500,7 +1005,7 @@ describe('SharePointController', () => {
             siteUrl: 'u',
             library: 'l',
             folder: 'f',
-            oauthToken: { accessToken: 't' },
+            credentials: { username: 'u', password: 'p' },
             bucketName: 'templates',
             projectName: 'project',
           },
@@ -546,10 +1051,72 @@ describe('SharePointController', () => {
       expect(res.status).toHaveBeenCalledWith(200);
     });
 
+    test('saveConfig: is scoped by userId only, ignoring any projectName in the body', async () => {
+      const res = buildRes();
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockResolvedValueOnce(null);
+      await controller.saveConfig(
+        {
+          body: {
+            userId: 'u1',
+            projectName: 'some-project',
+            siteUrl: 's',
+            library: 'l',
+            folder: 'f',
+            displayName: 'd',
+          },
+        } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(__mockConfigModel.findOne).toHaveBeenCalledWith({ userId: 'u1' });
+    });
+
     test('saveConfig: missing fields', async () => {
       const res = buildRes();
       await controller.saveConfig({ body: {} } as any, res);
       expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    // Regression: a missing/non-string userId must 400, not silently become
+    // findOne({}) — which would match and overwrite an arbitrary other
+    // user's saved config.
+    test('saveConfig: 400 when userId is missing, without querying the model', async () => {
+      const res = buildRes();
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      await controller.saveConfig({ body: { siteUrl: 's' } } as any, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(__mockConfigModel.findOne).not.toHaveBeenCalled();
+    });
+
+    test('saveConfig: 400 when userId is not a string (NoSQL-injection-shaped body)', async () => {
+      const res = buildRes();
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      await controller.saveConfig({ body: { siteUrl: 's', userId: { $ne: null } } } as any, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(__mockConfigModel.findOne).not.toHaveBeenCalled();
+    });
+
+    // Regression: an Online config saves with library/folder both blank —
+    // the whole location lives in siteUrl. Only siteUrl is required now.
+    test('saveConfig: 200 with library/folder both empty (Online config)', async () => {
+      const res = buildRes();
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockResolvedValueOnce(null);
+      await controller.saveConfig(
+        {
+          body: {
+            userId: 'u1',
+            projectName: 'p1',
+            siteUrl: 'https://tenant.sharepoint.com/:f:/r/teams/x/Shared Documents/DocGen Templates',
+            library: '',
+            folder: '',
+            displayName: 'Prod SharePoint',
+          },
+        } as any,
+        res
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     test('saveConfig: create new config', async () => {
@@ -640,6 +1207,94 @@ describe('SharePointController', () => {
       expect(res2.body.success).toBe(true);
     });
 
+    test('getConfig: returns the app-level config with no projectName in the query at all', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 's',
+          library: 'l',
+          folder: 'f',
+          displayName: 'd',
+          lastUsed: new Date(0),
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.body.success).toBe(true);
+      expect(__mockConfigModel.findOne).toHaveBeenCalledWith({ userId: 'u1' });
+    });
+
+    test('getConfig: flags a legacy Online row (populated library/folder) as requiresRelink', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 'https://tenant.sharepoint.com/sites/projectx',
+          library: 'Shared Documents',
+          folder: 'Templates/STD',
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(true);
+      expect(res.body.relinkReason).toBe('legacy-site-path');
+    });
+
+    test('getConfig: does not flag a Copy-Link-shaped Online row', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 'https://tenant.sharepoint.com/:f:/r/teams/x/Shared%20Documents/y',
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(false);
+      expect(res.body.relinkReason).toBeNull();
+    });
+
+    test('getConfig: does not flag an on-prem row', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          siteUrl: 'http://sp-server/sites/project',
+          library: 'Templates',
+          folder: 'DocGen',
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(false);
+    });
+
+    test('getConfig: trusts an already-confirmed row (authType + linkResolvedAt present) without reclassifying', async () => {
+      const { __mockConfigModel } = require('../../models/SharePointConfig');
+      __mockConfigModel.findOne.mockImplementationOnce(() => ({
+        sort: jest.fn().mockResolvedValue({
+          userId: 'u1',
+          // This siteUrl shape would otherwise classify as legacy — but a
+          // prior confirmed resolution should be trusted over the heuristic.
+          siteUrl: 'https://tenant.sharepoint.com/sites/projectx',
+          library: 'Shared Documents',
+          folder: 'Templates/STD',
+          authType: 'online',
+          linkResolvedAt: new Date(),
+          save: jest.fn().mockResolvedValue(null),
+        }),
+      }));
+      const res = buildRes();
+      await controller.getConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res);
+      expect(res.body.requiresRelink).toBe(false);
+    });
+
     /**
      * getConfigs (requires userId)
      * Returns 400 if the x-user-id header is missing.
@@ -699,7 +1354,7 @@ describe('SharePointController', () => {
       expect(res.body).toEqual({ success: false, message: 'all-configs-fail' });
     });
 
-    test('deleteConfig: missing fields and success', async () => {
+    test('deleteConfig: missing userId and success (no projectName required)', async () => {
       const res1 = buildRes();
       await controller.deleteConfig({ headers: {}, query: {} } as any, res1);
       expect(res1.status).toHaveBeenCalledWith(400);
@@ -707,11 +1362,9 @@ describe('SharePointController', () => {
       const { __mockConfigModel } = require('../../models/SharePointConfig');
       __mockConfigModel.deleteOne.mockResolvedValueOnce({ deletedCount: 1 });
       const res2 = buildRes();
-      await controller.deleteConfig(
-        { headers: { 'x-user-id': 'u1' }, query: { projectName: 'p1' } } as any,
-        res2
-      );
+      await controller.deleteConfig({ headers: { 'x-user-id': 'u1' }, query: {} } as any, res2);
       expect(res2.status).toHaveBeenCalledWith(200);
+      expect(__mockConfigModel.deleteOne).toHaveBeenCalledWith({ userId: 'u1' });
     });
 
     test('deleteConfig: returns 404 when configuration not found', async () => {

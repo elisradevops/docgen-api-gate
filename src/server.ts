@@ -3,10 +3,15 @@ dotenv.config();
 import App from './app';
 import logger from './util/logger';
 import connectToDatabase from './util/mongodb';
+import { assertAuthConfig } from './util/authConfig';
 
 const app = new App().app;
 const startServer = async () => {
   try {
+    // Fail fast on a misconfigured OAuth/session env (missing CLIENT_SECRET,
+    // http:// REDIRECT_URI, wildcard CORS_ALLOWED_ORIGINS, etc.) before
+    // accepting any traffic.
+    assertAuthConfig();
     await connectToDatabase();
     app.listen(process.env.PORT || 3000, () => {
       logger.info(`dg-api-gate listening on port ${process.env.PORT || 3000}`);

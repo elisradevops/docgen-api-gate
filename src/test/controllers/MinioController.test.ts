@@ -97,6 +97,24 @@ describe('MinioController', () => {
     expect(result[0].inputDetailsKey).toBe('p/STD/__input__/file1.input.json');
   });
 
+  test('getBucketFileList: decodes sourceLastModified metadata', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
+    const res = buildRes();
+
+    const stream = makeStream([{ name: 'p/STD/file1.dotx', etag: '123' }]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+    mockS3.statObject.mockResolvedValueOnce({
+      metaData: { sourcelastmodified: '2024-05-01T10:00:00Z' },
+    });
+
+    const p = controller.getBucketFileList(req, res);
+    stream.emitAll();
+    const result: any = await p;
+
+    expect(result.length).toBe(1);
+    expect(result[0].sourceLastModified).toBe('2024-05-01T10:00:00Z');
+  });
+
   test('getBucketFileList: decodes encoded metadata values to original unicode content', async () => {
     const req: any = { params: { bucketName: 'templates' }, query: { projectName: 'p', docType: 'STD' } };
     const res = buildRes();
@@ -231,6 +249,7 @@ describe('MinioController', () => {
     expect(result.length).toBe(1);
     expect(result[0].createdBy).toBe('');
     expect(result[0].inputSummary).toBe('');
+    expect(result[0].sourceLastModified).toBe('');
   });
 
   /**
@@ -316,6 +335,58 @@ describe('MinioController', () => {
     expect(receivedMetadata.createdById.startsWith("utf8''")).toBe(true);
     expect(receivedMetadata.createdBy).not.toContain('\n');
     expect(receivedMetadata.createdBy).not.toContain('\r');
+  });
+
+  test('uploadFile: attaches sourceLastModified metadata when provided', async () => {
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+    let receivedMetadata: Record<string, string> = {};
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, meta: Record<string, string>, cb: Function) => {
+        receivedMetadata = meta;
+        cb(null, { etag: 'etag-source-last-modified' });
+      },
+    );
+
+    const req: any = {
+      body: {
+        bucketName: 'attachments',
+        teamProjectName: 'p',
+        docType: 'STD',
+        isExternalUrl: false,
+        sourceLastModified: '2024-05-01T10:00:00Z',
+      },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).resolves.toEqual({ fileItem: expect.any(Object) });
+    expect(receivedMetadata.sourceLastModified).toBe('2024-05-01T10:00:00Z');
+  });
+
+  test('uploadFile: omits sourceLastModified metadata when absent', async () => {
+    mockS3.bucketExists.mockResolvedValueOnce(true);
+    let receivedMetadata: Record<string, string> = {};
+    mockS3.putObject.mockImplementation(
+      (_b: string, _o: string, _s: any, _len: number, meta: Record<string, string>, cb: Function) => {
+        receivedMetadata = meta;
+        cb(null, { etag: 'etag-no-source-last-modified' });
+      },
+    );
+
+    const req: any = {
+      body: { bucketName: 'attachments', teamProjectName: 'p', docType: 'STD', isExternalUrl: false },
+      file: {
+        mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        originalname: 'f.docx',
+        path: '/tmp/f.docx',
+      },
+    };
+
+    await expect(controller.uploadFile(req, {} as any)).resolves.toEqual({ fileItem: expect.any(Object) });
+    expect(receivedMetadata.sourceLastModified).toBeUndefined();
   });
 
   test('downloadFile: sets RFC 6266 content-disposition for non-ASCII filename', async () => {

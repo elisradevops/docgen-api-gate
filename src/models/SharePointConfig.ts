@@ -7,10 +7,15 @@ export interface ISharePointConfig extends Document {
   userId?: string; // Optional: per-user configuration
   projectName?: string; // Optional: per-project configuration
   siteUrl: string; // Full SharePoint site URL
-  library: string; // Document library name
-  folder: string; // Folder path within library
+  library?: string; // Document library name — on-prem only; blank for Online configs and paste-a-URL on-prem configs
+  folder?: string; // Folder path within library — blank for Online configs (the whole location is siteUrl)
   displayName?: string; // Friendly name for UI
   lastUsed?: Date; // Track when last used
+  // Relink-migration discriminator (see SharePointController.getConfig and
+  // sharePointLinkClassifier.ts) — optional, so pre-existing rows stay valid.
+  authType?: 'onprem' | 'online';
+  requiresRelink?: boolean; // sticky: set once a saved Online link is proven unresolvable via /shares
+  linkResolvedAt?: Date; // last successful resolution — the "confirmed" marker
   createdAt: Date;
   updatedAt: Date;
 }
@@ -22,10 +27,19 @@ const SharePointConfigSchema = new Schema(
     userId: { type: String, required: false },
     projectName: { type: String, required: false },
     siteUrl: { type: String, required: true },
-    library: { type: String, required: true, default: 'Shared Documents' },
-    folder: { type: String, required: true, default: 'Templates' },
+    // Not required: an Online config's siteUrl is itself the pasted
+    // sharing/folder link, and even on-prem paste-a-URL configs
+    // (resolveSiteFromUrl) leave library blank. Mongoose's built-in
+    // `required` validator on a String path rejects an explicit empty
+    // string as "missing", so these must stay optional rather than
+    // required-with-a-default — a default only ever fills in `undefined`.
+    library: { type: String, required: false },
+    folder: { type: String, required: false },
     displayName: { type: String, required: false },
     lastUsed: { type: Date, default: Date.now },
+    authType: { type: String, required: false, enum: ['onprem', 'online'] },
+    requiresRelink: { type: Boolean, required: false, default: false },
+    linkResolvedAt: { type: Date, required: false },
   },
   {
     timestamps: true,
