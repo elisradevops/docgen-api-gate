@@ -2,10 +2,33 @@ import dotenv from 'dotenv';
 dotenv.config();
 import App from './app';
 import logger from './util/logger';
-import connectToDatabase from './util/mongodb';
+import connectToDatabase, { disconnectMongo } from './util/mongodb';
 import { assertAuthConfig } from './util/authConfig';
 
 const app = new App().app;
+
+// A Mongo-down request that isn't already caught locally (see
+// requireSession/requireMongo) would otherwise surface only as an
+// unhandled rejection with no response ever sent to the client. Log it
+// rather than crash the process — a crash-and-restart loop is worse than a
+// slow/failed individual request while Mongo is down.
+process.on('unhandledRejection', (reason: any) => {
+  logger.error(`Unhandled promise rejection: ${reason?.message || reason}`);
+});
+process.on('uncaughtException', (error: Error) => {
+  logger.error(`Uncaught exception: ${error.message}`);
+});
+
+const shutdown = async (signal: string) => {
+  logger.info(`Received ${signal}, shutting down`);
+  // An open MongoClient socket keeps the event loop alive and can block
+  // graceful pod termination.
+  await disconnectMongo();
+  process.exit(0);
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 const startServer = async () => {
   try {
     // Fail fast on a misconfigured OAuth/session env (missing CLIENT_SECRET,

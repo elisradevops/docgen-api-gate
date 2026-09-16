@@ -13,6 +13,8 @@ import { AuthController } from '../controllers/AuthController';
 import { requireSession } from '../helpers/auth/requireSession';
 import { requireCsrf } from '../helpers/auth/requireCsrf';
 import { attachSessionIfPresent } from '../helpers/auth/attachSessionIfPresent';
+import { requireMongo } from '../helpers/db/requireMongo';
+import { probeMongoConnection } from '../util/mongodb';
 const Minio = require('minio');
 
 export class Routes {
@@ -163,7 +165,7 @@ export class Routes {
         };
       };
 
-      const checkMongoDb = () => {
+      const checkMongoDb = async () => {
         const state = Number(mongoose?.connection?.readyState ?? 0);
         const stateLabelMap: Record<number, string> = {
           0: 'disconnected',
@@ -172,18 +174,6 @@ export class Routes {
           3: 'disconnecting',
         };
         const stateLabel = stateLabelMap[state] || 'unknown';
-
-        if (state === 1) {
-          return {
-            key: 'mongodb',
-            displayName: 'MongoDB',
-            status: 'up',
-            connectionStatus: 'connected',
-            version: 'n/a',
-            checkedAt,
-            details: { state, stateLabel },
-          };
-        }
 
         if (state === 2) {
           return {
@@ -195,6 +185,22 @@ export class Routes {
             checkedAt,
             details: { state, stateLabel },
             error: `MongoDB is ${stateLabel}`,
+          };
+        }
+
+        // readyState alone can lag reality (e.g. it still reads 1 for a few
+        // seconds after the remote mongod restarts), so back it with a real
+        // ping the same way /ready does.
+        const pingOk = state === 1 && (await probeMongoConnection());
+        if (pingOk) {
+          return {
+            key: 'mongodb',
+            displayName: 'MongoDB',
+            status: 'up',
+            connectionStatus: 'connected',
+            version: 'n/a',
+            checkedAt,
+            details: { state, stateLabel },
           };
         }
 
@@ -398,7 +404,7 @@ export class Routes {
 
       const apiGateDependencies = await Promise.all([
         checkMinio(),
-        Promise.resolve(checkMongoDb()),
+        checkMongoDb(),
       ]);
 
       const monitoredDependencies = downstreamServicesWithDependencies.flatMap((service) =>
@@ -422,6 +428,20 @@ export class Routes {
         checkedAt,
         services: [apiGateService, ...downstreamServicesWithDependencies],
       });
+    });
+
+    // Kubernetes/OpenShift readiness probe — unlike /health (always 200,
+    // aggregated), this returns 503 while Mongo is unreachable so the
+    // orchestrator can pull traffic off this pod instead of routing
+    // Favorites requests into a 503/hang. Deliberately not wired as a
+    // liveness probe — a Mongo outage must not restart-loop the pod.
+    app.route('/ready').get(async (_req: Request, res: Response) => {
+      const ok = await probeMongoConnection();
+      if (ok) {
+        res.status(200).json({ ok: true });
+        return;
+      }
+      res.status(503).json({ ok: false, mongodb: 'disconnected' });
     });
 
     app.route('/jsonDocument').get((req: Request, res: Response) => {
@@ -572,7 +592,7 @@ export class Routes {
     });
 
     // Create or update a favorite
-    app.route('/dataBase/createFavorite').post(async (req: Request, res: Response) => {
+    app.route('/dataBase/createFavorite').post(requireMongo, async (req: Request, res: Response) => {
       this.dataBaseController.createFavorite(req, res).catch((err) => {
         res.status(500).json({
           message: `Failed to create/update favorite: ${err}`,
@@ -582,7 +602,7 @@ export class Routes {
     });
 
     // Get favorites by userId and docType
-    app.route('/dataBase/getFavorites').get(async (req: Request, res: Response) => {
+    app.route('/dataBase/getFavorites').get(requireMongo, async (req: Request, res: Response) => {
       this.dataBaseController.getFavorites(req, res).catch((err) => {
         res.status(500).json({
           message: `Failed to retrieve favorites: ${err}`,
@@ -592,7 +612,7 @@ export class Routes {
     });
 
     // Delete a favorite by ID
-    app.route('/dataBase/deleteFavorite/:id').delete(async (req: Request, res: Response) => {
+    app.route('/dataBase/deleteFavorite/:id').delete(requireMongo, async (req: Request, res: Response) => {
       this.dataBaseController.deleteFavorite(req, res).catch((err) => {
         res.status(500).json({
           message: `Failed to delete favorite: ${err}`,

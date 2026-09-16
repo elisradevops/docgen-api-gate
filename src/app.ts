@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import cors, { CorsOptions } from 'cors';
 import { Routes } from './routes/JsonDocRoutes';
 import { injectRootSpan } from './helpers/openTracing/tracer-middleware';
@@ -22,7 +22,23 @@ export default class App {
     this.app.options('*', cors(corsOptions));
     this.app.use(injectRootSpan);
     this.routePrv.routes(this.app, this.upload); // Pass multer instance to routes
+    // Safety net: without this, an async middleware rejection (e.g.
+    // requireSession hitting a Mongo error not already caught locally) is
+    // never routed to a handler on Express 4 and the client hangs with no
+    // response at all. Must be registered last.
+    this.app.use(this.errorHandler);
   }
+
+  private errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction): void => {
+    if (res.headersSent) return;
+    const message = String(err?.message || err || 'Unknown error');
+    if (message.startsWith('CORS blocked for origin:')) {
+      res.status(403).json({ success: false, error: 'cors_blocked' });
+      return;
+    }
+    logger.error(`Unhandled request error: ${message}`);
+    res.status(500).json({ success: false, error: 'internal_error' });
+  };
 
   private config(): void {
     this.app.use(express.json());

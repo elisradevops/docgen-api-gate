@@ -6,6 +6,7 @@
 import { Response, NextFunction } from 'express';
 import { resolveSession } from '../../services/auth/SessionService';
 import { parseCookieHeader, sessionCookieName } from '../../util/cookies';
+import logger from '../../util/logger';
 
 const BEARER_PREFIX = 'Bearer ';
 
@@ -25,7 +26,18 @@ export async function requireSession(req: any, res: Response, next: NextFunction
     return;
   }
 
-  const session = await resolveSession(rawToken);
+  // resolveSession touches Mongo (AuthSession/MsalTokenCache). If the DB is
+  // unreachable this must not read as an invalid session — a 401 would send
+  // the frontend into reopening the sign-in popup for what is really an
+  // infrastructure outage. Report it as a 503 instead so the caller retries.
+  let session;
+  try {
+    session = await resolveSession(rawToken);
+  } catch (error) {
+    logger.error(`Session resolution failed: ${error.message}`);
+    res.status(503).json({ success: false, error: 'service_unavailable' });
+    return;
+  }
   if (!session) {
     res.status(401).json({ success: false, error: 'reauth_required' });
     return;
