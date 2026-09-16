@@ -7,6 +7,7 @@ const listenMock = jest.fn((port: number | string, cb?: () => void) => {
 jest.mock('../util/mongodb', () => ({
   __esModule: true,
   default: jest.fn(),
+  disconnectMongo: jest.fn(),
 }));
 
 jest.mock('../app', () => ({

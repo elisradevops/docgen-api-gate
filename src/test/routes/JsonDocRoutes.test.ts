@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import mongoose from 'mongoose';
 import * as path from 'path';
 import { withLocalAgent } from '../utils/localSupertest';
+import * as mongodbUtil from '../../util/mongodb';
 
 describe('JsonDocRoutes', () => {
   beforeEach(() => {
@@ -154,6 +155,10 @@ describe('JsonDocRoutes', () => {
       downloadManagerUrl: process.env.downloadManagerUrl,
     };
     const prevReadyState = (mongoose.connection as any).readyState;
+    // readyState alone doesn't imply a real socket in this test process
+    // (there's no live mongod), so checkMongoDb's ping is stubbed to match
+    // the "connected" state under test.
+    const probeMongoSpy = jest.spyOn(mongodbUtil, 'probeMongoConnection').mockResolvedValue(true);
 
     process.env.dgContentControlUrl = 'http://dg-content-control:3000';
     process.env.jsonToWordPostUrl = 'http://json-to-word:5000';
@@ -209,6 +214,7 @@ describe('JsonDocRoutes', () => {
       process.env.MINIO_ROOT_PASSWORD = prev.minioPass;
       process.env.downloadManagerUrl = prev.downloadManagerUrl;
       (mongoose.connection as any).readyState = prevReadyState;
+      probeMongoSpy.mockRestore();
       axiosGetSpy.mockRestore();
       minioClientSpy.mockRestore();
     }
@@ -457,9 +463,15 @@ describe('JsonDocRoutes', () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).createFavorite = jest.fn().mockRejectedValue('db-fail');
 
-    const res = await withLocalAgent(app, (agent) => agent.post('/dataBase/createFavorite').send({}).expect(500));
-
-    expect(res.body.message).toContain('Failed to create/update favorite');
+    // requireMongo gates this route on connectivity; simulate a live connection.
+    const prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1;
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.post('/dataBase/createFavorite').send({}).expect(500));
+      expect(res.body.message).toContain('Failed to create/update favorite');
+    } finally {
+      (mongoose.connection as any).readyState = prevReadyState;
+    }
   });
 
   test('GET /azure/projects delegates to DataProviderController', async () => {
@@ -613,20 +625,31 @@ describe('JsonDocRoutes', () => {
       res.status(200).json({ favorites: [] });
     });
 
-    const res = await withLocalAgent(app, (agent) => agent.get('/dataBase/getFavorites').expect(200));
-
-    expect(routes.dataBaseController.getFavorites).toHaveBeenCalled();
-    expect(res.body).toEqual({ favorites: [] });
+    // requireMongo gates this route on connectivity; simulate a live connection.
+    const prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1;
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.get('/dataBase/getFavorites').expect(200));
+      expect(routes.dataBaseController.getFavorites).toHaveBeenCalled();
+      expect(res.body).toEqual({ favorites: [] });
+    } finally {
+      (mongoose.connection as any).readyState = prevReadyState;
+    }
   });
 
   test('GET /dataBase/getFavorites returns 500 on controller error', async () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).getFavorites = jest.fn().mockRejectedValue('fav-fail');
 
-    const res = await withLocalAgent(app, (agent) => agent.get('/dataBase/getFavorites').expect(500));
-
-    expect(res.body.message).toContain('Failed to retrieve favorites');
-    expect(res.body.error).toBe('fav-fail');
+    const prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1;
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.get('/dataBase/getFavorites').expect(500));
+      expect(res.body.message).toContain('Failed to retrieve favorites');
+      expect(res.body.error).toBe('fav-fail');
+    } finally {
+      (mongoose.connection as any).readyState = prevReadyState;
+    }
   });
 
   test('DELETE /dataBase/deleteFavorite returns 200 on success', async () => {
@@ -635,20 +658,30 @@ describe('JsonDocRoutes', () => {
       res.status(200).json({ ok: true });
     });
 
-    const res = await withLocalAgent(app, (agent) => agent.delete('/dataBase/deleteFavorite/123').expect(200));
-
-    expect(routes.dataBaseController.deleteFavorite).toHaveBeenCalled();
-    expect(res.body).toEqual({ ok: true });
+    const prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1;
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.delete('/dataBase/deleteFavorite/123').expect(200));
+      expect(routes.dataBaseController.deleteFavorite).toHaveBeenCalled();
+      expect(res.body).toEqual({ ok: true });
+    } finally {
+      (mongoose.connection as any).readyState = prevReadyState;
+    }
   });
 
   test('DELETE /dataBase/deleteFavorite returns 500 on controller error', async () => {
     const { app, routes } = createAppAndRoutes();
     (routes.dataBaseController as any).deleteFavorite = jest.fn().mockRejectedValue('del-fail');
 
-    const res = await withLocalAgent(app, (agent) => agent.delete('/dataBase/deleteFavorite/123').expect(500));
-
-    expect(res.body.message).toContain('Failed to delete favorite');
-    expect(res.body.error).toBe('del-fail');
+    const prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1;
+    try {
+      const res = await withLocalAgent(app, (agent) => agent.delete('/dataBase/deleteFavorite/123').expect(500));
+      expect(res.body.message).toContain('Failed to delete favorite');
+      expect(res.body.error).toBe('del-fail');
+    } finally {
+      (mongoose.connection as any).readyState = prevReadyState;
+    }
   });
 
   test('other Azure proxy routes delegate to DataProviderController', async () => {
@@ -788,7 +821,11 @@ describe('JsonDocRoutes', () => {
 
       await withLocalAgent(app, async (agent) => {
         const res = await agent.get('/jsonDocument').set('Origin', 'https://untrusted.example.com');
-        expect(res.status).toBe(500);
+        // Previously an unhandled CORS error fell through to Express's
+        // default 500 HTML page; the app-level error handler now maps it
+        // to an explicit, JSON 403.
+        expect(res.status).toBe(403);
+        expect(res.body).toEqual({ success: false, error: 'cors_blocked' });
         expect(res.headers['access-control-allow-origin']).toBeUndefined();
       });
     });
@@ -799,7 +836,8 @@ describe('JsonDocRoutes', () => {
 
       await withLocalAgent(app, async (agent) => {
         const res = await agent.get('/jsonDocument').set('Origin', 'https://untrusted.example.com');
-        expect(res.status).toBe(500);
+        expect(res.status).toBe(403);
+        expect(res.body).toEqual({ success: false, error: 'cors_blocked' });
         expect(res.headers['access-control-allow-origin']).toBeUndefined();
       });
     });
