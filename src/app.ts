@@ -16,10 +16,16 @@ export default class App {
 
   constructor() {
     this.app = express();
-    this.config();
+    // cors() must run before the body parsers: express.json()/urlencoded()
+    // throw synchronously on an oversized body, which skips straight to the
+    // error handler below without ever reaching cors() if it were registered
+    // after config(). That left every 413 response without CORS headers, so
+    // the browser reported a network/CORS error instead of a 413 — and the
+    // request queue's retry-on-network-error logic then retried it 3 times.
     const corsOptions = this.createCorsOptions();
     this.app.use(cors(corsOptions));
     this.app.options('*', cors(corsOptions));
+    this.config();
     this.app.use(injectRootSpan);
     this.routePrv.routes(this.app, this.upload); // Pass multer instance to routes
     // Safety net: without this, an async middleware rejection (e.g.
@@ -36,13 +42,28 @@ export default class App {
       res.status(403).json({ success: false, error: 'cors_blocked' });
       return;
     }
+    if (err?.type === 'entity.too.large' || err?.status === 413) {
+      logger.warn(`Request body too large: ${message}`);
+      res.status(413).json({
+        success: false,
+        error: 'entity_too_large',
+        message: 'Request body is too large.',
+        limit: err?.limit,
+      });
+      return;
+    }
     logger.error(`Unhandled request error: ${message}`);
     res.status(500).json({ success: false, error: 'internal_error' });
   };
 
   private config(): void {
-    this.app.use(express.json());
-    this.app.use(express.urlencoded({ extended: false }));
+    // No explicit limit here used to mean express's 100kb default, which the
+    // Historical Query "Send Request" payload (compare-result JSON, can run
+    // into several MB) exceeds. Env-overridable, following the same pattern
+    // as the multer fileSize cap above.
+    const jsonBodyLimitBytes = Number(process.env.API_JSON_BODY_MAX_BYTES || 50 * 1024 * 1024);
+    this.app.use(express.json({ limit: jsonBodyLimitBytes }));
+    this.app.use(express.urlencoded({ extended: false, limit: jsonBodyLimitBytes }));
   }
 
   private createCorsOptions(): CorsOptions {
