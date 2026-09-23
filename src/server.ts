@@ -41,7 +41,6 @@ const startServer = async () => {
       logger.info(`dg-content-control url: ${process.env.dgContentControlUrl}`);
       logger.info(`jsontoword url: ${process.env.jsonToWordPostUrl}`);
       logger.info(`minio root user : ${process.env.MINIO_ROOT_USER}`);
-      logger.info(`minio root password : ${process.env.MINIO_ROOT_PASSWORD}`);
       logger.info(`minio region : ${process.env.MINIO_REGION}`);
       logger.info(`minio endpoint : ${process.env.MINIO_ENDPOINT}`);
     });
