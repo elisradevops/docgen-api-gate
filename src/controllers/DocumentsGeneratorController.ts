@@ -3,33 +3,45 @@ import { DocumentRequest } from '../models/DocumentRequest';
 import { JSONDocumentGenerator } from '../helpers/JsonDocGenerators/JsonDocumentGenerator';
 import axios from 'axios';
 import logger from '../util/logger';
+import { runContextStore, RunContext } from '../util/runContext';
+import { isMongoConnected } from '../util/mongodb';
+import { DocumentRun, IDocumentRunErrorChainEntry, DOCUMENT_RUN_RETENTION_MS } from '../models/DocumentRun';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
     return new Promise(async (resolve, reject) => {
+      const runContext = runContextStore.getStore();
+      const startedAt = new Date();
       try {
         const json = JSON.stringify(req.body);
         const documentRequest: DocumentRequest = JSON.parse(json);
         this.applyUploadDefaults(documentRequest);
         this.normalizeBucket(documentRequest);
+        await this.createRunRecord(runContext, startedAt, documentRequest);
         const jsonDocumentGenerator: JSONDocumentGenerator = new JSONDocumentGenerator();
 
         try {
-          const docTemplateResponse: any = await axios.post(
-            `${process.env.dgContentControlUrl}/generate-doc-template`,
-            {
-              orgUrl: documentRequest.tfsCollectionUri,
-              token: documentRequest.PAT,
-              projectName: documentRequest.teamProjectName,
-              outputType: 'json',
-              templateUrl: documentRequest.templateFile,
-              minioEndPoint: documentRequest.uploadProperties.ServiceUrl,
-              minioAccessKey: documentRequest.uploadProperties.AwsAccessKeyId,
-              minioSecretKey: documentRequest.uploadProperties.AwsSecretAccessKey,
-              attachmentsBucketName: 'attachments',
-              formattingSettings: documentRequest.formattingSettings,
-            }
-          );
+          let docTemplateResponse: any;
+          try {
+            docTemplateResponse = await axios.post(
+              `${process.env.dgContentControlUrl}/generate-doc-template`,
+              {
+                orgUrl: documentRequest.tfsCollectionUri,
+                token: documentRequest.PAT,
+                projectName: documentRequest.teamProjectName,
+                outputType: 'json',
+                templateUrl: documentRequest.templateFile,
+                minioEndPoint: documentRequest.uploadProperties.ServiceUrl,
+                minioAccessKey: documentRequest.uploadProperties.AwsAccessKeyId,
+                minioSecretKey: documentRequest.uploadProperties.AwsSecretAccessKey,
+                attachmentsBucketName: 'attachments',
+                formattingSettings: documentRequest.formattingSettings,
+              }
+            );
+          } catch (err: any) {
+            err.step = err.step || 'generate-doc-template';
+            throw err;
+          }
 
           logger.debug('generated template');
           const docTemplate = docTemplateResponse.data;
@@ -78,12 +90,22 @@ export class DocumentsGeneratorController {
               fileName: internalValidationFileName,
             };
           }
-          const documentUrl: any = await axios.post(
-            `${process.env.jsonToWordPostUrl}/api/${!isExcelSpreadsheet ? 'word' : 'excel'}/create`,
-            docTemplate
-          );
+          let documentUrl: any;
+          try {
+            documentUrl = await axios.post(
+              `${process.env.jsonToWordPostUrl}/api/${!isExcelSpreadsheet ? 'word' : 'excel'}/create`,
+              docTemplate
+            );
+          } catch (err: any) {
+            err.step = err.step || 'render-document';
+            throw err;
+          }
+          await this.finalizeRunRecord(runContext, {
+            status: 'succeeded',
+            documentUrl: typeof documentUrl.data === 'string' ? documentUrl.data : undefined,
+          });
           return resolve(documentUrl.data);
-        } catch (err) {
+        } catch (err: any) {
           if (err.response) {
             const responseError = err.response.data || {};
             const statusCode = Number(err?.response?.status || 500);
@@ -93,19 +115,116 @@ export class DocumentsGeneratorController {
               wrapped.statusCode = statusCode;
               wrapped.code = responseError?.code;
               wrapped.details = responseError;
+              wrapped.step = err.step;
               throw wrapped;
             }
-            throw new Error(responseError.message);
+            const wrapped: any = new Error(responseError.message);
+            wrapped.step = err.step;
+            throw wrapped;
           }
           throw err;
         }
-      } catch (err) {
-        if ((err as any)?.statusCode) {
+      } catch (err: any) {
+        await this.finalizeRunRecord(runContext, { status: 'failed', errorChain: this.buildErrorChain(err) });
+        if (err?.statusCode) {
           return reject(err);
         }
-        return reject((err as any)?.message || err);
+        return reject(this.toStructuredError(err));
       }
     });
+  }
+
+  private async createRunRecord(
+    runContext: RunContext | undefined,
+    startedAt: Date,
+    documentRequest: DocumentRequest
+  ): Promise<void> {
+    if (!runContext?.runId || !isMongoConnected()) return;
+    try {
+      await DocumentRun.create({
+        runId: runContext.runId,
+        status: 'running',
+        trigger: runContext.trigger || 'pipeline',
+        startedAt,
+        userId: documentRequest.userEmail,
+        project: documentRequest.teamProjectName,
+        templateName: documentRequest.templateFile,
+        expiresAt: new Date(startedAt.getTime() + DOCUMENT_RUN_RETENTION_MS),
+      });
+    } catch (err) {
+      // Monitoring must never break generation — see Phase 6's transport safety rules.
+      logger.warn('Failed to create DocumentRun record', err);
+    }
+  }
+
+  private async finalizeRunRecord(
+    runContext: RunContext | undefined,
+    update: {
+      status: 'succeeded' | 'failed';
+      documentUrl?: string;
+      errorChain?: IDocumentRunErrorChainEntry[];
+    }
+  ): Promise<void> {
+    if (!runContext?.runId || !isMongoConnected()) return;
+    try {
+      await DocumentRun.updateOne(
+        { runId: runContext.runId },
+        {
+          $set: {
+            status: update.status,
+            endedAt: new Date(),
+            documentUrl: update.documentUrl,
+            errorChain: update.errorChain || [],
+          },
+        }
+      );
+    } catch (err) {
+      logger.warn('Failed to finalize DocumentRun record', err);
+    }
+  }
+
+  // A single ADO/content-control fan-out failure (JsonDocumentGenerator's allSettled) carries
+  // one entry per failed content control; anything else — the doc-template call, the render
+  // call, a parse failure — becomes a single api-gate-attributed entry.
+  private buildErrorChain(err: any): IDocumentRunErrorChainEntry[] {
+    if (Array.isArray(err?.contentControlFailures) && err.contentControlFailures.length > 0) {
+      return err.contentControlFailures.map((failure: any) => ({
+        service: 'docgen-content-control',
+        step: `generate-content-control:${failure.title}`,
+        message: failure.message,
+        code: failure.code,
+        stack: failure.stack,
+      }));
+    }
+    return [
+      {
+        service: 'docgen-api-gate',
+        step: err?.step,
+        message: err?.message || String(err),
+        code: err?.code,
+        stack: err?.stack,
+      },
+    ];
+  }
+
+  // Normalizes whatever createJSONDoc's inner try/catch produced into a plain structured
+  // object — previously this path could reject with a bare string (Phase 5's known bug:
+  // `reject((err as any)?.message || err)`), which drops statusCode/code/contentControlFailures
+  // entirely for anything that wasn't already tagged with a statusCode.
+  private toStructuredError(err: any): {
+    message: string;
+    statusCode: number;
+    code?: string;
+    details?: any;
+    contentControlFailures?: any[];
+  } {
+    return {
+      message: err?.message || String(err),
+      statusCode: Number(err?.statusCode) || 500,
+      code: err?.code,
+      details: err?.details,
+      contentControlFailures: err?.contentControlFailures,
+    };
   }
 
   public async createFlatTestReporterDoc(req: Request, res: Response): Promise<any> {

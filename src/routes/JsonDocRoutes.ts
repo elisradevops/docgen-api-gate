@@ -15,6 +15,7 @@ import { requireCsrf } from '../helpers/auth/requireCsrf';
 import { attachSessionIfPresent } from '../helpers/auth/attachSessionIfPresent';
 import { requireMongo } from '../helpers/db/requireMongo';
 import { probeMongoConnection } from '../util/mongodb';
+import { runContextStore } from '../util/runContext';
 const Minio = require('minio');
 
 export class Routes {
@@ -448,10 +449,11 @@ export class Routes {
       res.status(200).json({ status: 'online - ' + moment().format() });
     });
     app.route('/jsonDocument/create').post(async (req: Request, res: Response) => {
+      const runId = runContextStore.getStore()?.runId;
       this.documentsGeneratorController
         .createJSONDoc(req, res)
         .then((documentUrl) => {
-          res.status(200).json({ documentUrl });
+          res.status(200).json({ documentUrl, runId });
         })
         .catch((err) => {
           const statusCode = Number(err?.statusCode || 500);
@@ -460,6 +462,8 @@ export class Routes {
             code: err?.code,
             dependency: err?.dependency,
             url: err?.url,
+            contentControlFailures: err?.contentControlFailures,
+            runId,
             //Error not structured correctly
             error: err,
           });

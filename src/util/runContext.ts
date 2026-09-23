@@ -6,6 +6,12 @@ import type { AxiosInstance } from 'axios';
 
 export interface RunContext {
   runId: string;
+  // Best-effort, not an authenticated signal: 'ui' means the caller supplied a valid
+  // x-docgen-run-id (the frontend does this per Phase 3); 'pipeline' means api-gate had to
+  // mint one. /jsonDocument/create carries no session middleware to derive this more directly.
+  // Optional because only attachRunContext ever sets it — other store.run(...) call sites
+  // (tests, other repos' copies of this file) have no notion of trigger.
+  trigger?: 'ui' | 'pipeline';
 }
 
 // Symbol.for uses the global symbol registry, so every duplicated copy of this file across
@@ -36,9 +42,13 @@ export function resolveRunId(headerValue: string | string[] | undefined): string
 // every downstream axios call made while handling it — runs inside the run context. Mints
 // once per incoming request, which for createJSONDoc means once per generation, not once
 // per outbound call.
-export function attachRunContext(req: Request, _res: Response, next: NextFunction): void {
-  const runId = resolveRunId(req.header('x-docgen-run-id'));
-  runContextStore.run({ runId }, next);
+export function attachRunContext(req: Request, res: Response, next: NextFunction): void {
+  const rawHeader = req.header('x-docgen-run-id');
+  const wasClientSupplied = typeof rawHeader === 'string' && RUN_ID_PATTERN.test(rawHeader);
+  const runId = resolveRunId(rawHeader);
+  // Echoed back so a pipeline caller that didn't send one can pick up the minted id (Phase 5).
+  res.setHeader('x-docgen-run-id', runId);
+  runContextStore.run({ runId, trigger: wasClientSupplied ? 'ui' : 'pipeline' }, next);
 }
 
 // Forwards the ambient runId as an outbound header on every request made through the given

@@ -307,7 +307,7 @@ describe('JsonDocRoutes', () => {
     );
 
     expect(routes.documentsGeneratorController.createJSONDoc).toHaveBeenCalled();
-    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' } });
+    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' }, runId: expect.any(String) });
   });
 
   test('POST /jsonDocument/create returns 500 when controller rejects', async () => {

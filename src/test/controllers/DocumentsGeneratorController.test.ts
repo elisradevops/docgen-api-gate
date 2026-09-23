@@ -125,7 +125,9 @@ describe('DocumentsGeneratorController', () => {
     const req = makeReq();
     const res = buildRes();
 
-    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('bad template');
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({ message: 'bad template', statusCode: 500 })
+    );
   });
 
   /**
@@ -139,7 +141,9 @@ describe('DocumentsGeneratorController', () => {
     const req = makeReq();
     const res = buildRes();
 
-    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('gen failed');
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({ message: 'gen failed', statusCode: 500 })
+    );
   });
   test('normalizes bucket name and fills default upload properties from env', async () => {
     axios.post
@@ -276,7 +280,9 @@ describe('DocumentsGeneratorController', () => {
     const req = makeReq();
     const res = buildRes();
 
-    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('json-to-word failed');
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({ message: 'json-to-word failed', statusCode: 500 })
+    );
   });
 
   test('json-to-word validation error preserves status/code for upstream 4xx handling', async () => {

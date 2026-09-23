@@ -67,22 +67,34 @@ describe('resolveRunId', () => {
 describe('attachRunContext middleware', () => {
   const fakeReq = (headers: Record<string, string>) =>
     ({ header: (name: string) => headers[name.toLowerCase()] } as any);
+  const fakeRes = () => {
+    const headers: Record<string, string> = {};
+    return { setHeader: (name: string, value: string) => (headers[name] = value), headers } as any;
+  };
 
-  test('runs next() inside a store carrying the resolved runId', () => {
+  test('runs next() inside a store carrying the resolved runId, tagged as ui', () => {
     let seenInsideNext: unknown;
-    attachRunContext(fakeReq({ 'x-docgen-run-id': 'abc-123' }), {} as any, () => {
-      seenInsideNext = runContextStore.getStore()?.runId;
+    attachRunContext(fakeReq({ 'x-docgen-run-id': 'abc-123' }), fakeRes(), () => {
+      seenInsideNext = runContextStore.getStore();
     });
-    expect(seenInsideNext).toBe('abc-123');
+    expect((seenInsideNext as any).runId).toBe('abc-123');
+    expect((seenInsideNext as any).trigger).toBe('ui');
   });
 
-  test('mints and runs next() inside a store even with no header at all', () => {
+  test('mints and runs next() inside a store even with no header at all, tagged as pipeline', () => {
     let seenInsideNext: unknown;
-    attachRunContext(fakeReq({}), {} as any, () => {
-      seenInsideNext = runContextStore.getStore()?.runId;
+    attachRunContext(fakeReq({}), fakeRes(), () => {
+      seenInsideNext = runContextStore.getStore();
     });
-    expect(typeof seenInsideNext).toBe('string');
-    expect((seenInsideNext as string).length).toBeGreaterThan(0);
+    expect(typeof (seenInsideNext as any).runId).toBe('string');
+    expect(((seenInsideNext as any).runId as string).length).toBeGreaterThan(0);
+    expect((seenInsideNext as any).trigger).toBe('pipeline');
+  });
+
+  test('echoes the resolved runId back as a response header', () => {
+    const res = fakeRes();
+    attachRunContext(fakeReq({ 'x-docgen-run-id': 'abc-123' }), res, () => {});
+    expect(res.headers['x-docgen-run-id']).toBe('abc-123');
   });
 });
 

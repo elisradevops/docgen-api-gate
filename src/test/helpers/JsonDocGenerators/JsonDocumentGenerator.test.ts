@@ -111,7 +111,7 @@ describe('JSONDocumentGenerator', () => {
     expect(mockLogger.info).toHaveBeenCalledTimes(2);
   });
 
-  test('generateContentControls logs and rethrows when an axios call fails', async () => {
+  test('generateContentControls logs and throws an aggregate error when an axios call fails', async () => {
     const boom = new Error('boom');
     (mockedAxios.post as jest.Mock).mockRejectedValueOnce(boom);
 
@@ -120,10 +120,30 @@ describe('JSONDocumentGenerator', () => {
         ...baseRequest,
         contentControls: [baseRequest.contentControls[0]],
       })
-    ).rejects.toBe(boom);
+    ).rejects.toMatchObject({
+      contentControlFailures: [
+        expect.objectContaining({ title: baseRequest.contentControls[0].title, message: 'boom' }),
+      ],
+    });
 
     expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.stringContaining(`Error adding content control ${baseRequest.contentControls[0].title}`)
+      expect.stringContaining(`Error adding content control ${baseRequest.contentControls[0].title}`),
+      boom
     );
+  });
+
+  test('generateContentControls captures every failure, not just the first (allSettled)', async () => {
+    const boom1 = new Error('boom1');
+    const boom2 = new Error('boom2');
+    (mockedAxios.post as jest.Mock).mockRejectedValueOnce(boom1).mockRejectedValueOnce(boom2);
+
+    await expect(generator.generateContentControls(baseRequest)).rejects.toMatchObject({
+      contentControlFailures: [
+        expect.objectContaining({ title: 'CC1', message: 'boom1' }),
+        expect.objectContaining({ title: 'CC2', message: 'boom2' }),
+      ],
+    });
+    // Both requests ran — allSettled, not Promise.all short-circuiting on the first rejection.
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
   });
 });

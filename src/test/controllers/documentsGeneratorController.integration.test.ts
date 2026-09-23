@@ -59,7 +59,7 @@ describe('DocumentsGeneratorController HTTP integration', () => {
 
     const res = await withLocalAgent(app, (agent) => agent.post('/jsonDocument/create').send(makeBody()).expect(200));
 
-    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' } });
+    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' }, runId: expect.any(String) });
 
     expect(axios.post as jest.Mock).toHaveBeenNthCalledWith(
       1,
