@@ -1,3 +1,5 @@
+import * as winston from 'winston';
+import Transport from 'winston-transport';
 import { redact } from '../../util/logger';
 
 const applyRedact = (info: Record<string, unknown>) => (redact() as any).transform({ ...info });
@@ -46,5 +48,61 @@ describe('logger redact format', () => {
   test('never throws and passes info through on null/undefined meta', () => {
     expect(() => applyRedact({ level: 'info', message: 'x', meta: null })).not.toThrow();
     expect(() => applyRedact({ level: 'info', message: 'x', meta: undefined })).not.toThrow();
+  });
+});
+
+// A capturing transport + the exact JSON format chain logger.ts uses (errors -> timestamp ->
+// redact -> splat -> json), so these tests exercise the real pipeline, not just redact() alone.
+class CaptureTransport extends Transport {
+  lines: Record<string, unknown>[] = [];
+  log(info: Record<string, unknown>, callback: () => void) {
+    this.lines.push(JSON.parse((info as any)[Symbol.for('message')] ?? JSON.stringify(info)));
+    callback();
+  }
+}
+function makeTestLogger() {
+  const capture = new CaptureTransport();
+  const logger = winston.createLogger({
+    level: 'silly',
+    format: winston.format.combine(
+      winston.format.errors({ stack: true }),
+      winston.format.timestamp(),
+      redact(),
+      winston.format.splat(),
+      winston.format.json()
+    ),
+    transports: [capture],
+  });
+  return { logger, capture };
+}
+
+describe('logger pipeline — errors({stack:true})', () => {
+  test('logger.error(err) (single-arg Error) still produces a non-empty message and a stack', () => {
+    // This is the regression errors({stack:true}) exists to prevent: without it, winston's
+    // single-arg path makes `info` *be* the Error, and message/stack are non-enumerable, so
+    // json() would emit {"level":"error","timestamp":"…"} — content-free.
+    const { logger, capture } = makeTestLogger();
+    logger.error(new Error('boom'));
+    expect(capture.lines).toHaveLength(1);
+    expect(capture.lines[0].message).toBe('boom');
+    expect(typeof capture.lines[0].stack).toBe('string');
+    expect((capture.lines[0].stack as string).length).toBeGreaterThan(0);
+  });
+});
+
+describe('logger pipeline — hostile inputs never throw', () => {
+  test.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['NaN', NaN],
+    ['a circular object', (() => { const c: any = { a: 1 }; c.self = c; return c; })()],
+    ['an object with a throwing getter', { get boom() { throw new Error('nope'); } }],
+    ['a BigInt', BigInt(9007199254740993)],
+    ['a Symbol', Symbol('x')],
+    ['an Error with no message', new Error()],
+    ['a 10MB string', 'x'.repeat(10 * 1024 * 1024)],
+  ])('logger.error(%s) does not throw', (_label, value) => {
+    const { logger } = makeTestLogger();
+    expect(() => logger.error(value as any)).not.toThrow();
   });
 });
