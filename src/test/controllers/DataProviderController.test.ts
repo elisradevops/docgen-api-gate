@@ -3,7 +3,7 @@ import { DataProviderController } from '../../controllers/DataProviderController
 
 jest.mock('axios', () => {
   const post = jest.fn();
-  const create = jest.fn(() => ({ post }));
+  const create = jest.fn(() => ({ post, interceptors: { request: { use: jest.fn() } } }));
   return { __esModule: true, default: { create }, create, post } as any;
 });
 

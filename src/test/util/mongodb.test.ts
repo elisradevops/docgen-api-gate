@@ -8,6 +8,7 @@ import connectToDatabase, {
   _resetMongoStateForTest,
 } from '../../util/mongodb';
 import logger from '../../util/logger';
+import { runContextStore } from '../../util/runContext';
 
 class FakeConnection extends EventEmitter {
   readyState = 0;
@@ -174,6 +175,34 @@ describe('util/mongodb', () => {
       getConnection().db = { admin: () => ({ command: jest.fn().mockRejectedValue(new Error('down')) }) };
 
       await expect(probeMongoConnection(1000)).resolves.toBe(false);
+    });
+  });
+
+  describe('reconnect timer — run-context leak guard', () => {
+    // scheduleReconnect's setTimeout is module-scope, not request-scope: it must not
+    // inherit whichever request happened to be in flight when the disconnect that
+    // triggered it fired, or reconnect-loop logs get stamped with a stale, unrelated
+    // runId — worse than carrying none at all.
+    test('the reconnect attempt runs outside the runId that was active when it was scheduled', async () => {
+      let seenRunIdDuringReconnect: string | undefined = 'not-observed';
+      asMockConnect().mockImplementationOnce(async () => {
+        await Promise.resolve();
+        throw new Error('boom');
+      });
+      asMockConnect().mockImplementationOnce(async () => {
+        seenRunIdDuringReconnect = runContextStore.getStore()?.runId;
+        await Promise.resolve();
+        getConnection().readyState = 1;
+        getConnection().emit('connected');
+      });
+
+      await runContextStore.run({ runId: 'request-that-triggered-disconnect' }, () => connectToDatabase());
+      expect(asMockConnect()).toHaveBeenCalledTimes(1);
+
+      await jest.runOnlyPendingTimersAsync();
+
+      expect(asMockConnect()).toHaveBeenCalledTimes(2);
+      expect(seenRunIdDuringReconnect).toBeUndefined();
     });
   });
 

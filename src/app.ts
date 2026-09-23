@@ -1,10 +1,18 @@
 import express, { NextFunction, Request, Response } from 'express';
 import cors, { CorsOptions } from 'cors';
+import axios from 'axios';
 import { Routes } from './routes/JsonDocRoutes';
 import { injectRootSpan } from './helpers/openTracing/tracer-middleware';
 import multer from 'multer'; // Import multer
 import { getAllowedOrigins } from './util/authConfig';
 import logger from './util/logger';
+import { attachRunContext, installRunIdForwarding } from './util/runContext';
+
+// Installed once at module load: every `import axios from 'axios'` elsewhere in this repo
+// (DocumentsGeneratorController, JsonDocumentGenerator, ...) resolves to this same
+// module-cached default instance, so this single call covers all of their outbound calls.
+// DataProviderController's axios.create() instance is separate and installs its own.
+installRunIdForwarding(axios);
 
 export default class App {
   public app: express.Application;
@@ -25,6 +33,10 @@ export default class App {
     const corsOptions = this.createCorsOptions();
     this.app.use(cors(corsOptions));
     this.app.options('*', cors(corsOptions));
+    // Threads the run id (frontend-supplied documentId, an SVD pipeline caller's header,
+    // or a freshly minted one) through every log emitted while handling this request,
+    // and through every downstream axios call made while handling it — see runContext.ts.
+    this.app.use(attachRunContext);
     this.config();
     this.app.use(injectRootSpan);
     this.routePrv.routes(this.app, this.upload); // Pass multer instance to routes
@@ -96,7 +108,15 @@ export default class App {
       },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'X-Ado-Org-Url', 'X-Ado-PAT', 'X-User-Id', 'Authorization', 'X-Csrf-Token'],
+      allowedHeaders: [
+        'Content-Type',
+        'X-Ado-Org-Url',
+        'X-Ado-PAT',
+        'X-User-Id',
+        'Authorization',
+        'X-Csrf-Token',
+        'X-Docgen-Run-Id',
+      ],
       optionsSuccessStatus: 204,
     };
   }

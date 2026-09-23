@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import axios, { AxiosInstance } from 'axios';
 import http from 'http';
 import https from 'https';
+import { installRunIdForwarding } from '../util/runContext';
 
 export class DataProviderController {
   private ccClient: AxiosInstance;
@@ -17,6 +18,9 @@ export class DataProviderController {
       httpsAgent,
       timeout: 20000,
     });
+    // This is a separate axios.create() instance — it doesn't share the default axios
+    // singleton's interceptors installed in app.ts, so it needs its own.
+    installRunIdForwarding(this.ccClient);
 
     const envMs = parseInt(process.env.CC_HISTORICAL_TIMEOUT_MS || '', 10);
     this.historicalTimeoutMs = Number.isFinite(envMs) && envMs > 0 ? envMs : 120000;

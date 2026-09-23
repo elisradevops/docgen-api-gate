@@ -4,9 +4,10 @@ import { withLocalAgent } from '../utils/localSupertest';
 
 jest.mock('axios', () => {
   const post = jest.fn();
-  const create = jest.fn(() => ({ post }));
+  const interceptors = { request: { use: jest.fn() } };
+  const create = jest.fn(() => ({ post, interceptors }));
   // Support both default import (axios.create / axios.post) and named exports
-  return { __esModule: true, default: { create, post }, create, post } as any;
+  return { __esModule: true, default: { create, post, interceptors }, create, post, interceptors } as any;
 });
 
 jest.mock('../../util/logger', () => ({

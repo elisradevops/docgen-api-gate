@@ -879,5 +879,26 @@ describe('JsonDocRoutes', () => {
         expect(res.headers['access-control-allow-headers']).toEqual(expect.stringContaining('X-Csrf-Token'));
       });
     });
+
+    // Regression: the frontend sends x-docgen-run-id on /jsonDocument/create (see
+    // docManagerApi.jsx's sendDocumentToGenerator) so a missing entry here silently
+    // breaks that request in the browser as an opaque CORS/network error, not a
+    // clear 403 — this is the failure mode that was actually hit.
+    test('preflight succeeds for the X-Docgen-Run-Id header used to correlate a generation run', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent
+          .options('/jsonDocument/create')
+          .set('Origin', 'https://docgen.example.com')
+          .set('Access-Control-Request-Method', 'POST')
+          .set('Access-Control-Request-Headers', 'Content-Type, X-Docgen-Run-Id');
+        expect(res.status).toBe(204);
+        expect(res.headers['access-control-allow-headers']).toEqual(
+          expect.stringContaining('X-Docgen-Run-Id')
+        );
+      });
+    });
   });
 });

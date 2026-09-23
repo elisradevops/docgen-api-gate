@@ -4,8 +4,9 @@ import { withLocalAgent } from '../utils/localSupertest';
 
 jest.mock('axios', () => {
   const post = jest.fn();
-  const create = jest.fn(() => ({ post }));
-  return { __esModule: true, default: { create, post }, create, post } as any;
+  const interceptors = { request: { use: jest.fn() } };
+  const create = jest.fn(() => ({ post, interceptors }));
+  return { __esModule: true, default: { create, post, interceptors }, create, post, interceptors } as any;
 });
 
 jest.mock('../../util/logger', () => ({
@@ -32,7 +33,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('GET /azure/projects forwards to /azure/projects with mapped payload', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { items: ['p1'] } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -64,7 +65,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('GET /azure/git/repos/:repoId/branches forwards correctly with query params', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { branches: ['main'] } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -94,7 +95,7 @@ describe('DataProviderController HTTP integration', () => {
     } as any;
 
     const ccPost = jest.fn().mockRejectedValueOnce(error);
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -116,7 +117,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('GET /azure/queries forwards path as provided', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { items: [] } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
     const app = createApp();
 
     await withLocalAgent(app, (agent) =>
@@ -139,7 +140,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('GET /azure/queries/historical forwards path as provided', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { items: [] } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
     const app = createApp();
 
     await withLocalAgent(app, (agent) =>
@@ -168,7 +169,7 @@ describe('DataProviderController HTTP integration', () => {
     } as any;
 
     const ccPost = jest.fn().mockRejectedValueOnce(error);
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -190,7 +191,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('GET /azure/queries/:queryId/historical-compare forwards compare payload', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { summary: { changedCount: 2 } } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -219,7 +220,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('GET /azure/queries/:queryId/historical-compare returns 400 when compare range is invalid', async () => {
     const ccPost = jest.fn();
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -244,7 +245,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('POST /time-machine/as-of maps contract payload to legacy historical-results upstream call', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { rows: [] } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -272,7 +273,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('POST /time-machine/compare maps contract payload to legacy historical-compare upstream call', async () => {
     const ccPost = jest.fn().mockResolvedValueOnce({ data: { rows: [], updatedCount: 0 } });
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
@@ -302,7 +303,7 @@ describe('DataProviderController HTTP integration', () => {
 
   test('POST /time-machine/compare returns 400 when timestamps are invalid', async () => {
     const ccPost = jest.fn();
-    asMockCreate().mockReturnValueOnce({ post: ccPost } as any);
+    asMockCreate().mockReturnValueOnce({ post: ccPost, interceptors: { request: { use: jest.fn() } } } as any);
 
     const app = createApp();
 
