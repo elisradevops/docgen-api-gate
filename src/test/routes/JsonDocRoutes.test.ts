@@ -900,5 +900,26 @@ describe('JsonDocRoutes', () => {
         );
       });
     });
+
+    // Regression: Phase 6b's frontend toggle sends x-docgen-capture-mode on
+    // /jsonDocument/create (docManagerApi.jsx's sendDocumentToGenerator) — the exact same
+    // failure mode as X-Docgen-Run-Id above, caught live this session (an opaque CORS/network
+    // error in the browser, not a clear 403) before this entry was added.
+    test('preflight succeeds for the X-Docgen-Capture-Mode header used for verbose/retain-on-failure capture', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent
+          .options('/jsonDocument/create')
+          .set('Origin', 'https://docgen.example.com')
+          .set('Access-Control-Request-Method', 'POST')
+          .set('Access-Control-Request-Headers', 'Content-Type, X-Docgen-Capture-Mode');
+        expect(res.status).toBe(204);
+        expect(res.headers['access-control-allow-headers']).toEqual(
+          expect.stringContaining('X-Docgen-Capture-Mode')
+        );
+      });
+    });
   });
 });

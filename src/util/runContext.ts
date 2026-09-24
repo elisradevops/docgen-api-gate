@@ -12,6 +12,11 @@ export interface RunContext {
   // Optional because only attachRunContext ever sets it — other store.run(...) call sites
   // (tests, other repos' copies of this file) have no notion of trigger.
   trigger?: 'ui' | 'pipeline';
+  // Phase 6b — per-run capture policy read by DiagnosticsTransport (logger.ts). Absent means
+  // 'normal' (today's warn/error-only behavior), the same optionality contract as `trigger`.
+  // Client-settable (x-docgen-capture-mode), so same trust-boundary treatment as runId: only
+  // the two named values survive attachRunContext's validation, anything else is dropped.
+  captureMode?: 'verbose' | 'retain-on-failure';
 }
 
 // Symbol.for uses the global symbol registry, so every duplicated copy of this file across
@@ -25,6 +30,12 @@ export const runContextStore: AsyncLocalStorage<RunContext> =
   ((globalThis as Record<symbol, unknown>)[KEY] = new AsyncLocalStorage<RunContext>());
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const CAPTURE_MODES = new Set(['verbose', 'retain-on-failure']);
+
+function resolveCaptureMode(headerValue: string | string[] | undefined): 'verbose' | 'retain-on-failure' | undefined {
+  const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  return raw && CAPTURE_MODES.has(raw) ? (raw as 'verbose' | 'retain-on-failure') : undefined;
+}
 
 // api-gate is the trust boundary for x-docgen-run-id (Key Decision #5): it is
 // client-settable by the frontend or an SVD pipeline caller, so it must be validated
@@ -46,9 +57,10 @@ export function attachRunContext(req: Request, res: Response, next: NextFunction
   const rawHeader = req.header('x-docgen-run-id');
   const wasClientSupplied = typeof rawHeader === 'string' && RUN_ID_PATTERN.test(rawHeader);
   const runId = resolveRunId(rawHeader);
+  const captureMode = resolveCaptureMode(req.header('x-docgen-capture-mode'));
   // Echoed back so a pipeline caller that didn't send one can pick up the minted id (Phase 5).
   res.setHeader('x-docgen-run-id', runId);
-  runContextStore.run({ runId, trigger: wasClientSupplied ? 'ui' : 'pipeline' }, next);
+  runContextStore.run({ runId, trigger: wasClientSupplied ? 'ui' : 'pipeline', captureMode }, next);
 }
 
 // Forwards the ambient runId as an outbound header on every request made through the given
@@ -60,10 +72,15 @@ export function attachRunContext(req: Request, res: Response, next: NextFunction
 // installed once, since every such import resolves to the same module-cached singleton.
 export function installRunIdForwarding(instance: AxiosInstance): void {
   instance.interceptors.request.use((config) => {
-    const runId = runContextStore.getStore()?.runId;
-    if (runId) {
+    const store = runContextStore.getStore();
+    if (store?.runId) {
       config.headers = config.headers ?? {};
-      (config.headers as Record<string, string>)['x-docgen-run-id'] = runId;
+      (config.headers as Record<string, string>)['x-docgen-run-id'] = store.runId;
+      // Phase 6b — content-control's own attachRunContext reads this the same way it reads
+      // x-docgen-run-id, so a run's capture mode survives the hop into the next process.
+      if (store.captureMode) {
+        (config.headers as Record<string, string>)['x-docgen-capture-mode'] = store.captureMode;
+      }
     }
     return config;
   });

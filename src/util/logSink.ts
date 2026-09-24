@@ -17,6 +17,10 @@ export interface DiagnosticEvent {
   userId?: string;
   message: string;
   err?: { message: string; code?: string; stack?: string };
+  // Phase 6b — set on a debug/info event captured under retain-on-failure. Deleted by
+  // api-gate at the run's one success point; left alone (and thus permanent, subject to the
+  // normal TTL) if the run fails.
+  retainPending?: boolean;
 }
 
 export interface LogSink {

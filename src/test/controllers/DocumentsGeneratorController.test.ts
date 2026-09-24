@@ -1,5 +1,7 @@
 import { DocumentsGeneratorController } from '../../controllers/DocumentsGeneratorController';
 import { buildRes } from '../utils/testResponse';
+import { runContextStore } from '../../util/runContext';
+import mongoose from 'mongoose';
 
 jest.mock('axios', () => ({
   post: jest.fn(),
@@ -12,6 +14,20 @@ jest.mock('../../util/logger', () => ({
   error: jest.fn(),
   readOwnVersion: jest.fn(() => '1.0.0-test'),
   redactValue: jest.fn((value: unknown) => value),
+}));
+
+jest.mock('../../models/LogEvent', () => ({
+  __esModule: true,
+  LogEvent: { deleteMany: jest.fn().mockResolvedValue(undefined) },
+}));
+
+jest.mock('../../models/DocumentRun', () => ({
+  __esModule: true,
+  DocumentRun: {
+    create: jest.fn().mockResolvedValue(undefined),
+    updateOne: jest.fn().mockResolvedValue(undefined),
+  },
+  DOCUMENT_RUN_RETENTION_MS: 90 * 24 * 60 * 60 * 1000,
 }));
 
 const genMock = { generateContentControls: jest.fn() };
@@ -543,5 +559,61 @@ describe('DocumentsGeneratorController', () => {
         message: 'External Bugs file validation failed',
       }),
     });
+  });
+});
+
+describe('DocumentsGeneratorController — Phase 6b retain-on-failure prune', () => {
+  const axios = require('axios');
+  const { LogEvent } = require('../../models/LogEvent');
+  const mockDeleteMany = LogEvent.deleteMany as jest.Mock;
+  let controller: DocumentsGeneratorController;
+  let prevReadyState: number;
+
+  function makeReq(overrides: any = {}) {
+    return {
+      body: {
+        tfsCollectionUri: 'https://org',
+        PAT: 'pat',
+        teamProjectName: 'project',
+        templateFile: 'http://template.dotx',
+        formattingSettings: {},
+        uploadProperties: { bucketName: 'ATTACH_MENTS' },
+        ...overrides,
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.dgContentControlUrl = 'http://cc';
+    process.env.jsonToWordPostUrl = 'http://jw';
+    controller = new DocumentsGeneratorController();
+    prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1; // isMongoConnected() reads this directly
+  });
+
+  afterEach(() => {
+    (mongoose.connection as any).readyState = prevReadyState;
+  });
+
+  test('deletes retainPending LogEvents for this run when the generation succeeds', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
+
+    await runContextStore.run({ runId: 'run-success' }, () => controller.createJSONDoc(makeReq(), buildRes()));
+
+    expect(mockDeleteMany).toHaveBeenCalledWith({ runId: 'run-success', retainPending: true });
+  });
+
+  test('does not delete anything when the generation fails', async () => {
+    axios.post.mockRejectedValueOnce({ response: { data: { message: 'doc-template failed' } } });
+
+    await expect(
+      runContextStore.run({ runId: 'run-failure' }, () => controller.createJSONDoc(makeReq(), buildRes()))
+    ).rejects.toBeDefined();
+
+    expect(mockDeleteMany).not.toHaveBeenCalled();
   });
 });

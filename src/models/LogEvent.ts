@@ -16,7 +16,9 @@ export interface ILogEventErr {
 
 export interface ILogEvent extends Document {
   ts: Date;
-  level: 'warn' | 'error';
+  // 'debug'/'info' only ever appear under Phase 6b's verbose/retain-on-failure capture modes
+  // — 'normal' mode (the only mode before Phase 6b) never persists below warn.
+  level: 'debug' | 'info' | 'warn' | 'error';
   service: string;
   version: string;
   runId?: string;
@@ -32,6 +34,9 @@ export interface ILogEvent extends Document {
   // DocumentRun.expiresAt, so retention counts from when the event was recorded rather than
   // sliding forward if the document is ever touched again.
   expiresAt: Date;
+  // Phase 6b — set on a debug/info event captured under retain-on-failure. Deleted by
+  // DocumentsGeneratorController at the run's one success point; left alone if the run fails.
+  retainPending?: boolean;
 }
 
 const ErrSchema = new Schema<ILogEventErr>(
@@ -58,7 +63,7 @@ export const LOG_EVENT_MAX_DOCUMENTS = Number(process.env.LOG_EVENT_MAX_DOCUMENT
 const LogEventSchema = new Schema(
   {
     ts: { type: Date, required: true },
-    level: { type: String, required: true, enum: ['warn', 'error'] },
+    level: { type: String, required: true, enum: ['debug', 'info', 'warn', 'error'] },
     service: { type: String, required: true },
     version: { type: String, required: true },
     runId: { type: String },
@@ -71,6 +76,7 @@ const LogEventSchema = new Schema(
     err: { type: ErrSchema },
     signature: { type: String, required: true },
     expiresAt: { type: Date, required: true },
+    retainPending: { type: Boolean },
   },
   { timestamps: true }
 );

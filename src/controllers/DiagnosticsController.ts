@@ -22,10 +22,16 @@ function clampString(value: unknown, max: number): string | undefined {
 // redact() winston format itself documents (a call-site problem, not a format one) — the
 // call-site fixes upstream (Phase 1/4) are what keep sensitive values out of message text at
 // the source.
+const CAPTURED_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+// Phase 6b — only debug/info volume is subject to this cap (warn/error, the 'normal'-mode
+// baseline, never is): a run only emits debug/info at all once it has opted into
+// verbose/retain-on-failure, so normal-mode runs never pay the extra count-query cost either.
+const PER_RUN_CAP = Number(process.env.DIAGNOSTICS_PER_RUN_MAX_EVENTS) || 20_000;
+
 function sanitizeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const event = raw as Record<string, unknown>;
-  if (event.level !== 'warn' && event.level !== 'error') return undefined;
+  if (typeof event.level !== 'string' || !CAPTURED_LEVELS.has(event.level)) return undefined;
   if (typeof event.service !== 'string' || typeof event.message !== 'string') return undefined;
 
   const message = clampString(event.message, MAX_MESSAGE_LEN) ?? '';
@@ -53,7 +59,74 @@ function sanitizeEvent(raw: unknown): Record<string, unknown> | undefined {
     err,
     signature: computeSignature(message),
     expiresAt: new Date(Date.now() + LOG_EVENT_RETENTION_MS),
+    retainPending: event.retainPending === true ? true : undefined,
   };
+}
+
+const TRUNCATION_MESSAGE = `Diagnostics capture truncated at ${PER_RUN_CAP} events for this run`;
+// computeSignature normalizes the embedded number to <n>, so this stays stable across
+// different PER_RUN_CAP values — it's what lets a later batch recognize "already marked".
+const TRUNCATION_SIGNATURE = computeSignature(TRUNCATION_MESSAGE);
+
+function truncationMarker(runId: string): Record<string, unknown> {
+  return {
+    ts: new Date(),
+    level: 'warn',
+    service: 'dg-api-gate',
+    version: 'unknown',
+    runId,
+    message: TRUNCATION_MESSAGE,
+    signature: TRUNCATION_SIGNATURE,
+    expiresAt: new Date(Date.now() + LOG_EVENT_RETENTION_MS),
+  };
+}
+
+// Applies the per-run cap to debug/info events only, grouped by runId — one count query per
+// distinct capped runId in the batch, not per event. Truncated events are dropped with one
+// marker inserted in their place, rather than a silent drop — and exactly one per run, not
+// one per batch: a long-truncated run flushes/ingests in many small batches, and each one
+// re-checking "am I over the cap" independently would otherwise re-insert the marker every
+// time (caught live during Phase 6b verification with a deliberately low cap).
+async function applyPerRunCap(docs: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const cappable = docs.filter((d) => (d.level === 'debug' || d.level === 'info') && typeof d.runId === 'string');
+  const runIds = [...new Set(cappable.map((d) => d.runId as string))];
+  if (runIds.length === 0) return docs;
+
+  const byRunId = new Map<string, number>();
+  const alreadyMarked = new Set<string>();
+  await Promise.all(
+    runIds.map(async (runId) => {
+      const [count, markerCount] = await Promise.all([
+        LogEvent.countDocuments({ runId }),
+        LogEvent.countDocuments({ runId, signature: TRUNCATION_SIGNATURE }),
+      ]);
+      byRunId.set(runId, count);
+      if (markerCount > 0) alreadyMarked.add(runId);
+    })
+  );
+
+  const result: Record<string, unknown>[] = [];
+  const truncatedRunIds = new Set<string>();
+  for (const doc of docs) {
+    const isCappable = (doc.level === 'debug' || doc.level === 'info') && typeof doc.runId === 'string';
+    if (!isCappable) {
+      result.push(doc);
+      continue;
+    }
+    const runId = doc.runId as string;
+    const count = byRunId.get(runId) ?? 0;
+    if (count >= PER_RUN_CAP) {
+      truncatedRunIds.add(runId);
+      continue;
+    }
+    byRunId.set(runId, count + 1);
+    result.push(doc);
+  }
+  for (const runId of truncatedRunIds) {
+    if (alreadyMarked.has(runId)) continue;
+    result.push(truncationMarker(runId));
+  }
+  return result;
 }
 
 export class DiagnosticsController {
@@ -75,8 +148,9 @@ export class DiagnosticsController {
     const sanitized = batch.map(sanitizeEvent).filter((e: unknown): e is Record<string, unknown> => !!e);
     const rejected = batch.length - sanitized.length;
     try {
-      if (sanitized.length > 0) {
-        await LogEvent.insertMany(sanitized, { ordered: false });
+      const toInsert = await applyPerRunCap(sanitized);
+      if (toInsert.length > 0) {
+        await LogEvent.insertMany(toInsert, { ordered: false });
       }
       res.status(200).json({ accepted: sanitized.length, rejected });
     } catch (err) {

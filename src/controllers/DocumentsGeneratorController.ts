@@ -11,6 +11,7 @@ import {
   IDocumentRunManifest,
   DOCUMENT_RUN_RETENTION_MS,
 } from '../models/DocumentRun';
+import { LogEvent } from '../models/LogEvent';
 import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
 
 export class DocumentsGeneratorController {
@@ -156,6 +157,7 @@ export class DocumentsGeneratorController {
             documentUrl: finalDocumentUrl,
             manifest,
           });
+          await this.pruneRetainOnFailureEvents(runContext);
           return resolve(documentUrl.data);
         } catch (err: any) {
           if (err.response) {
@@ -252,6 +254,21 @@ export class DocumentsGeneratorController {
       );
     } catch (err) {
       logger.warn('Failed to finalize DocumentRun record', err);
+    }
+  }
+
+  // Phase 6b — retain-on-failure's "eager-write, prune-on-success" resolution: debug/info
+  // events captured under that mode are persisted immediately (like verbose), tagged
+  // retainPending, from every process (content-control and the two packages that run
+  // in-process inside it — see their own DiagnosticsTransport). This is the one place a run's
+  // success is known, so it's the one place they get deleted; the failure path does nothing,
+  // since the events are already there and should simply stay.
+  private async pruneRetainOnFailureEvents(runContext: RunContext | undefined): Promise<void> {
+    if (!runContext?.runId || !isMongoConnected()) return;
+    try {
+      await LogEvent.deleteMany({ runId: runContext.runId, retainPending: true });
+    } catch (err) {
+      logger.warn('Failed to prune retain-on-failure LogEvents', err);
     }
   }
 

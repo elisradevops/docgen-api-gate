@@ -29,11 +29,25 @@ describe('LogEvent schema', () => {
     }
   );
 
-  test('rejects a level outside the warn/error enum', () => {
-    const doc = new LogEvent({ ...validFields, level: 'info' });
+  test('rejects a level outside the debug/info/warn/error enum', () => {
+    const doc = new LogEvent({ ...validFields, level: 'silly' });
     const error = doc.validateSync();
     expect(error).toBeDefined();
     expect(error?.errors.level).toBeDefined();
+  });
+
+  test.each(['debug', 'info'])(
+    '%s is a valid level (Phase 6b — verbose/retain-on-failure capture)',
+    (level) => {
+      const doc = new LogEvent({ ...validFields, level });
+      expect(doc.validateSync()).toBeUndefined();
+    }
+  );
+
+  test('accepts an optional retainPending flag', () => {
+    const doc = new LogEvent({ ...validFields, level: 'debug', retainPending: true });
+    expect(doc.validateSync()).toBeUndefined();
+    expect(doc.retainPending).toBe(true);
   });
 
   test('accepts an optional err subdocument', () => {

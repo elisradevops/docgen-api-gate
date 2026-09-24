@@ -116,6 +116,7 @@ export default class App {
         'Authorization',
         'X-Csrf-Token',
         'X-Docgen-Run-Id',
+        'X-Docgen-Capture-Mode',
       ],
       optionsSuccessStatus: 204,
     };

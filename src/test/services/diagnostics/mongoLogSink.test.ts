@@ -3,6 +3,7 @@ jest.mock('../../../models/LogEvent', () => ({
   LogEvent: {
     insertMany: jest.fn().mockResolvedValue(undefined),
     estimatedDocumentCount: jest.fn().mockResolvedValue(0),
+    countDocuments: jest.fn().mockResolvedValue(0),
     find: jest.fn().mockReturnValue({
       sort: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
@@ -24,6 +25,7 @@ import { MongoLogSink } from '../../../services/diagnostics/mongoLogSink';
 import type { DiagnosticEvent } from '../../../util/logSink';
 
 const mockInsertMany = LogEvent.insertMany as jest.Mock;
+const mockCountDocuments = LogEvent.countDocuments as jest.Mock;
 const mockIsMongoConnected = isMongoConnected as jest.Mock;
 
 function makeEvent(overrides: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
@@ -130,5 +132,47 @@ describe('MongoLogSink', () => {
     await sink.flush();
     // Only the first flush's prune check runs; the second is inside the 60s throttle window.
     expect(mockEstimated).toHaveBeenCalledTimes(1);
+  });
+
+  test('flush() forwards retainPending on a debug/info event', async () => {
+    const sink = new MongoLogSink();
+    sink.push(makeEvent({ level: 'debug', message: 'retain-on-failure debug', runId: 'run-1', retainPending: true }));
+    await sink.flush();
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs[0].retainPending).toBe(true);
+  });
+
+  test('per-run cap: truncates debug/info past the limit and inserts one marker event', async () => {
+    mockCountDocuments.mockResolvedValueOnce(20_000); // already at the default cap
+    const sink = new MongoLogSink();
+    sink.push(makeEvent({ level: 'debug', message: 'one more debug line', runId: 'run-1' }));
+    await sink.flush();
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs).toHaveLength(1);
+    expect(docs[0].level).toBe('warn');
+    expect(docs[0].message).toContain('truncated');
+    expect(docs[0].runId).toBe('run-1');
+  });
+
+  test('per-run cap does not apply to warn/error events', async () => {
+    const sink = new MongoLogSink();
+    sink.push(makeEvent({ level: 'error', message: 'boom', runId: 'run-1' }));
+    await sink.flush();
+    expect(mockCountDocuments).not.toHaveBeenCalled();
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs).toHaveLength(1);
+    expect(docs[0].level).toBe('error');
+  });
+
+  test('per-run cap: does not re-insert the truncation marker once one already exists for the run', async () => {
+    // First call (total count) over the cap, second call (marker-existence count) > 0 — a
+    // long-truncated run flushing in many small batches must not re-insert the marker every
+    // single flush (caught live during Phase 6b verification with a deliberately low cap).
+    mockCountDocuments.mockResolvedValueOnce(20_000).mockResolvedValueOnce(1);
+    const sink = new MongoLogSink();
+    sink.push(makeEvent({ level: 'debug', message: 'yet another debug line', runId: 'run-1' }));
+    await sink.flush();
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs).toHaveLength(0);
   });
 });

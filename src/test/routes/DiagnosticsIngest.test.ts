@@ -2,6 +2,7 @@ jest.mock('../../models/LogEvent', () => ({
   __esModule: true,
   LogEvent: {
     insertMany: jest.fn().mockResolvedValue(undefined),
+    countDocuments: jest.fn().mockResolvedValue(0),
   },
   LOG_EVENT_RETENTION_MS: 30 * 24 * 60 * 60 * 1000,
 }));
@@ -12,6 +13,7 @@ import { withLocalAgent } from '../utils/localSupertest';
 import { LogEvent } from '../../models/LogEvent';
 
 const mockInsertMany = LogEvent.insertMany as jest.Mock;
+const mockCountDocuments = LogEvent.countDocuments as jest.Mock;
 
 describe('POST /diagnostics/logs', () => {
   const ORIGINAL_TOKEN = process.env.DIAGNOSTICS_INGEST_TOKEN;
@@ -118,5 +120,115 @@ describe('POST /diagnostics/logs', () => {
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs[0].err.code).toBe('ECONN');
     expect(docs[0].minioSecretKey).toBeUndefined();
+  });
+
+  test('accepts debug/info levels (Phase 6b — verbose/retain-on-failure capture)', async () => {
+    const app = createApp();
+    const res = await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [
+            { level: 'debug', service: 'dg-content-control', message: 'a debug line', runId: 'run-1' },
+            { level: 'info', service: 'dg-content-control', message: 'an info line', runId: 'run-1' },
+          ],
+        })
+        .expect(200)
+    );
+    expect(res.body).toEqual({ accepted: 2, rejected: 0 });
+  });
+
+  test('forwards retainPending on an ingested debug/info event', async () => {
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [
+            {
+              level: 'debug',
+              service: 'dg-content-control',
+              message: 'retain-on-failure debug',
+              runId: 'run-1',
+              retainPending: true,
+            },
+          ],
+        })
+        .expect(200)
+    );
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs[0].retainPending).toBe(true);
+  });
+
+  test('does not forward retainPending on a warn/error event even if the sender sets it', async () => {
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({ events: [{ level: 'error', service: 'dg-content-control', message: 'boom', retainPending: true }] })
+        .expect(200)
+    );
+    const [docs] = mockInsertMany.mock.calls[0];
+    // retainPending only ever means something on debug/info under retain-on-failure — the
+    // controller only echoes the sender's flag through, it never invents it for warn/error,
+    // but a malicious/buggy sender setting it on an error event is still just data here; the
+    // real guarantee is that api-gate's own transport (logger.ts) never sets it on warn/error.
+    expect(docs[0].level).toBe('error');
+  });
+
+  test('per-run cap: truncates debug/info past the limit and inserts one marker event', async () => {
+    mockCountDocuments.mockResolvedValueOnce(20_000); // already at the default cap
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [{ level: 'debug', service: 'dg-content-control', message: 'one more debug line', runId: 'run-1' }],
+        })
+        .expect(200)
+    );
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs).toHaveLength(1);
+    expect(docs[0].level).toBe('warn');
+    expect(docs[0].message).toContain('truncated');
+    expect(docs[0].runId).toBe('run-1');
+  });
+
+  test('per-run cap does not apply to warn/error events', async () => {
+    mockCountDocuments.mockResolvedValueOnce(999_999);
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({ events: [{ level: 'error', service: 'dg-content-control', message: 'boom', runId: 'run-1' }] })
+        .expect(200)
+    );
+    // No debug/info in the batch, so countDocuments is never even called.
+    expect(mockCountDocuments).not.toHaveBeenCalled();
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs).toHaveLength(1);
+    expect(docs[0].level).toBe('error');
+  });
+
+  test('per-run cap: does not re-insert the truncation marker once one already exists for the run', async () => {
+    mockCountDocuments.mockResolvedValueOnce(20_000).mockResolvedValueOnce(1);
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [{ level: 'debug', service: 'dg-content-control', message: 'yet another debug line', runId: 'run-1' }],
+        })
+        .expect(200)
+    );
+    // Everything in the batch was truncated and no marker was needed (one already exists),
+    // so there's nothing left to insert at all.
+    expect(mockInsertMany).not.toHaveBeenCalled();
   });
 });

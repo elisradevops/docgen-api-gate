@@ -138,7 +138,17 @@ export class DiagnosticsTransport extends Transport {
   log(info: Record<string, unknown>, callback: () => void): void {
     setImmediate(() => this.emit("logged", info));
     try {
-      if (DIAGNOSTICS_CAPTURE_ENABLED && (info.level === "warn" || info.level === "error")) {
+      const level = info.level;
+      const isWarnOrError = level === "warn" || level === "error";
+      // Phase 6b — the logger's own level gate is now 'debug' (see createLogger below), so a
+      // debug/info call reaches this transport regardless of mode; this is the one place that
+      // decides whether it's actually persisted, keyed off the per-run capture mode rather
+      // than a process-wide setting — concurrent runs in 'normal' mode are unaffected by a
+      // sibling run's 'verbose'/'retain-on-failure' opt-in.
+      const captureMode = runContextStore.getStore()?.captureMode;
+      const isCapturedDebugOrInfo =
+        (level === "debug" || level === "info") && (captureMode === "verbose" || captureMode === "retain-on-failure");
+      if (DIAGNOSTICS_CAPTURE_ENABLED && (isWarnOrError || isCapturedDebugOrInfo)) {
         // winston.errors({stack:true}) merges an Error's own enumerable properties (stack,
         // and anything else the call site set, e.g. `err.code`) directly onto `info` — there
         // is no separate nested info.err. `info.stack`'s presence is the only reliable signal
@@ -166,6 +176,7 @@ export class DiagnosticsTransport extends Transport {
                 stack: clamp(info.stack, MAX_STACK_LEN),
               }
             : undefined,
+          retainPending: !isWarnOrError && captureMode === "retain-on-failure" ? true : undefined,
         };
         getLogSink()?.push(event);
       }
@@ -182,8 +193,17 @@ export class DiagnosticsTransport extends Transport {
 // anyone reading raw console output needs to roll back.
 const useJson = (process.env.LOG_FORMAT || "text").toLowerCase() === "json";
 
+// Phase 6b — the Logger's own level gate must be 'debug' (winston's most permissive) so a
+// debug/info call always reaches every transport's log(); a static per-logger level can't
+// depend on the ALS store's per-run capture mode, so DiagnosticsTransport has to be the one
+// deciding what's actually persisted. The Console transport below gets its own explicit
+// level so stdout's default behavior (info/warn/error unless LOG_LEVEL=debug) is unchanged —
+// this only spends the format-chain cost on debug() calls that previously short-circuited
+// for free; info/warn/error volume (Phase 4's focus) is unaffected either way.
+const CONSOLE_LOG_LEVEL = process.env.LOG_LEVEL || "info";
+
 const logger: winston.Logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || "info",
+  level: "debug",
   defaultMeta: { service: "dg-api-gate", version: readOwnVersion() },
   format: useJson
     ? winston.format.combine(
@@ -208,7 +228,7 @@ const logger: winston.Logger = winston.createLogger({
   // until disk pressure evicts the pod. Under a read-only root filesystem (plausible
   // hardening for an accredited on-prem cluster) it throws at import time instead, which
   // is worse. `kubectl logs` is the only viewer that matters here.
-  transports: [new winston.transports.Console(), new DiagnosticsTransport()],
+  transports: [new winston.transports.Console({ level: CONSOLE_LOG_LEVEL }), new DiagnosticsTransport()],
 });
 
 export default logger;

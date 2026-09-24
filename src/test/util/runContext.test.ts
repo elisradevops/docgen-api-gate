@@ -96,6 +96,30 @@ describe('attachRunContext middleware', () => {
     attachRunContext(fakeReq({ 'x-docgen-run-id': 'abc-123' }), res, () => {});
     expect(res.headers['x-docgen-run-id']).toBe('abc-123');
   });
+
+  test.each(['verbose', 'retain-on-failure'] as const)('accepts a valid x-docgen-capture-mode: %s', (mode) => {
+    let seenInsideNext: unknown;
+    attachRunContext(fakeReq({ 'x-docgen-capture-mode': mode }), fakeRes(), () => {
+      seenInsideNext = runContextStore.getStore();
+    });
+    expect((seenInsideNext as any).captureMode).toBe(mode);
+  });
+
+  test('defaults captureMode to undefined (normal) when the header is absent', () => {
+    let seenInsideNext: unknown;
+    attachRunContext(fakeReq({}), fakeRes(), () => {
+      seenInsideNext = runContextStore.getStore();
+    });
+    expect((seenInsideNext as any).captureMode).toBeUndefined();
+  });
+
+  test('drops a malformed x-docgen-capture-mode rather than trusting it', () => {
+    let seenInsideNext: unknown;
+    attachRunContext(fakeReq({ 'x-docgen-capture-mode': 'DROP TABLE runs' }), fakeRes(), () => {
+      seenInsideNext = runContextStore.getStore();
+    });
+    expect((seenInsideNext as any).captureMode).toBeUndefined();
+  });
 });
 
 describe('installRunIdForwarding', () => {
@@ -132,5 +156,29 @@ describe('installRunIdForwarding', () => {
     const outConfig = run({ headers: {} });
 
     expect(outConfig.headers['x-docgen-run-id']).toBeUndefined();
+  });
+
+  test('forwards the ambient captureMode alongside runId when present', () => {
+    const { instance, run } = makeFakeAxiosInstance();
+    installRunIdForwarding(instance);
+
+    let outConfig: any;
+    runContextStore.run({ runId: 'run-xyz', captureMode: 'verbose' }, () => {
+      outConfig = run({ headers: {} });
+    });
+
+    expect(outConfig.headers['x-docgen-capture-mode']).toBe('verbose');
+  });
+
+  test('does not add a capture-mode header when the run is normal (no captureMode set)', () => {
+    const { instance, run } = makeFakeAxiosInstance();
+    installRunIdForwarding(instance);
+
+    let outConfig: any;
+    runContextStore.run({ runId: 'run-xyz' }, () => {
+      outConfig = run({ headers: {} });
+    });
+
+    expect(outConfig.headers['x-docgen-capture-mode']).toBeUndefined();
   });
 });
