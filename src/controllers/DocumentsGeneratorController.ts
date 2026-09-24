@@ -5,13 +5,20 @@ import axios from 'axios';
 import logger from '../util/logger';
 import { runContextStore, RunContext } from '../util/runContext';
 import { isMongoConnected } from '../util/mongodb';
-import { DocumentRun, IDocumentRunErrorChainEntry, DOCUMENT_RUN_RETENTION_MS } from '../models/DocumentRun';
+import {
+  DocumentRun,
+  IDocumentRunErrorChainEntry,
+  IDocumentRunManifest,
+  DOCUMENT_RUN_RETENTION_MS,
+} from '../models/DocumentRun';
+import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
     return new Promise(async (resolve, reject) => {
       const runContext = runContextStore.getStore();
       const startedAt = new Date();
+      const manifest: IDocumentRunManifest = emptyManifest();
       try {
         const json = JSON.stringify(req.body);
         const documentRequest: DocumentRequest = JSON.parse(json);
@@ -22,6 +29,7 @@ export class DocumentsGeneratorController {
 
         try {
           let docTemplateResponse: any;
+          const docTemplateStartedAt = Date.now();
           try {
             docTemplateResponse = await axios.post(
               `${process.env.dgContentControlUrl}/generate-doc-template`,
@@ -40,13 +48,40 @@ export class DocumentsGeneratorController {
             );
           } catch (err: any) {
             err.step = err.step || 'generate-doc-template';
+            manifest.steps.push(
+              buildStep({
+                name: 'generate-doc-template',
+                type: 'generate-doc-template',
+                status: 'failed',
+                startedAt: docTemplateStartedAt,
+              })
+            );
             throw err;
           }
+          manifest.steps.push(
+            buildStep({
+              name: 'generate-doc-template',
+              type: 'generate-doc-template',
+              status: 'succeeded',
+              startedAt: docTemplateStartedAt,
+            })
+          );
+          manifest.environment = buildEnvironment(this.parseVersionsHeader(docTemplateResponse.headers));
 
           logger.debug('generated template');
           const docTemplate = docTemplateResponse.data;
           docTemplate.uploadProperties = documentRequest.uploadProperties;
-          const contentControls = await jsonDocumentGenerator.generateContentControls(documentRequest);
+          let contentControls: any[];
+          try {
+            const generated = await jsonDocumentGenerator.generateContentControls(documentRequest);
+            contentControls = generated.results;
+            manifest.steps.push(...generated.steps);
+            manifest.artifacts.push(...generated.artifacts);
+          } catch (err: any) {
+            if (Array.isArray(err?.steps)) manifest.steps.push(...err.steps);
+            if (Array.isArray(err?.artifacts)) manifest.artifacts.push(...err.artifacts);
+            throw err;
+          }
           docTemplate.JsonDataList = contentControls;
           docTemplate.minioAttachmentData = [];
           contentControls.forEach((contentControl) => {
@@ -61,6 +96,7 @@ export class DocumentsGeneratorController {
           const resolvedCtx = (contentControls as any[])
             .map((c) => c?.resolvedContextName)
             .find((n) => !!n);
+          manifest.inputs = buildInputs(documentRequest, resolvedCtx);
           const hasAutoDiscoveredRange = (documentRequest.contentControls || []).some((cc) => {
             const data = (cc as any).data || {};
             return (data.rangeType === 'release' || data.rangeType === 'pipeline') &&
@@ -91,6 +127,7 @@ export class DocumentsGeneratorController {
             };
           }
           let documentUrl: any;
+          const renderStartedAt = Date.now();
           try {
             documentUrl = await axios.post(
               `${process.env.jsonToWordPostUrl}/api/${!isExcelSpreadsheet ? 'word' : 'excel'}/create`,
@@ -98,11 +135,26 @@ export class DocumentsGeneratorController {
             );
           } catch (err: any) {
             err.step = err.step || 'render-document';
+            manifest.steps.push(
+              buildStep({ name: 'render-document', type: 'render-document', status: 'failed', startedAt: renderStartedAt })
+            );
             throw err;
+          }
+          const finalDocumentUrl = typeof documentUrl.data === 'string' ? documentUrl.data : undefined;
+          manifest.steps.push(
+            buildStep({ name: 'render-document', type: 'render-document', status: 'succeeded', startedAt: renderStartedAt })
+          );
+          if (finalDocumentUrl) {
+            manifest.artifacts.push({
+              kind: 'document',
+              name: documentRequest.uploadProperties.fileName,
+              url: finalDocumentUrl,
+            });
           }
           await this.finalizeRunRecord(runContext, {
             status: 'succeeded',
-            documentUrl: typeof documentUrl.data === 'string' ? documentUrl.data : undefined,
+            documentUrl: finalDocumentUrl,
+            manifest,
           });
           return resolve(documentUrl.data);
         } catch (err: any) {
@@ -125,7 +177,11 @@ export class DocumentsGeneratorController {
           throw err;
         }
       } catch (err: any) {
-        await this.finalizeRunRecord(runContext, { status: 'failed', errorChain: this.buildErrorChain(err) });
+        await this.finalizeRunRecord(runContext, {
+          status: 'failed',
+          errorChain: this.buildErrorChain(err),
+          manifest,
+        });
         if (err?.statusCode) {
           return reject(err);
         }
@@ -157,12 +213,27 @@ export class DocumentsGeneratorController {
     }
   }
 
+  // The .generate-doc-template response's optional x-docgen-versions header — set once per
+  // generation by content-control (routes/index.ts), reusing that request rather than adding
+  // a probe. Malformed/absent is not an error: environment just falls back to 'unknown'.
+  private parseVersionsHeader(headers: any): { service?: string; dataProvider?: string; skins?: string } | undefined {
+    const raw = headers?.['x-docgen-versions'];
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      logger.warn('Failed to parse x-docgen-versions header', err);
+      return undefined;
+    }
+  }
+
   private async finalizeRunRecord(
     runContext: RunContext | undefined,
     update: {
       status: 'succeeded' | 'failed';
       documentUrl?: string;
       errorChain?: IDocumentRunErrorChainEntry[];
+      manifest?: IDocumentRunManifest;
     }
   ): Promise<void> {
     if (!runContext?.runId || !isMongoConnected()) return;
@@ -174,6 +245,7 @@ export class DocumentsGeneratorController {
             status: update.status,
             endedAt: new Date(),
             documentUrl: update.documentUrl,
+            manifest: update.manifest,
             errorChain: update.errorChain || [],
           },
         }

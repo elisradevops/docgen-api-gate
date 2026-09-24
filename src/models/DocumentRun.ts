@@ -11,6 +11,34 @@ export interface IDocumentRunErrorChainEntry {
   stack?: string;
 }
 
+export interface IDocumentRunManifestStep {
+  name: string;
+  type: 'generate-doc-template' | 'generate-content-control' | 'render-document';
+  status: 'succeeded' | 'failed';
+  durationMs: number;
+  errorCount: number;
+  // Left undefined until Phase 6's transport exists to count it for real — a fabricated 0
+  // would be indistinguishable from a verified one to anything reading this later.
+  warnCount?: number;
+  outputSummary?: Record<string, unknown>;
+}
+
+export interface IDocumentRunManifest {
+  environment?: {
+    services?: Record<string, string>;
+    packages?: Record<string, string>;
+    flags?: Record<string, string>;
+  };
+  inputs?: Record<string, unknown>;
+  steps: IDocumentRunManifestStep[];
+  artifacts: Array<{
+    kind: string;
+    name: string;
+    url: string;
+    contentControlTitle?: string;
+  }>;
+}
+
 export interface IDocumentRun extends Document {
   runId: string;
   status: 'running' | 'succeeded' | 'failed';
@@ -27,6 +55,7 @@ export interface IDocumentRun extends Document {
   templateName?: string;
   documentUrl?: string;
   errorChain: IDocumentRunErrorChainEntry[];
+  manifest?: IDocumentRunManifest;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -38,6 +67,45 @@ const ErrorChainEntrySchema = new Schema<IDocumentRunErrorChainEntry>(
     message: { type: String, required: true },
     code: { type: String },
     stack: { type: String },
+  },
+  { _id: false }
+);
+
+const ManifestStepSchema = new Schema<IDocumentRunManifestStep>(
+  {
+    name: { type: String, required: true },
+    type: {
+      type: String,
+      required: true,
+      enum: ['generate-doc-template', 'generate-content-control', 'render-document'],
+    },
+    status: { type: String, required: true, enum: ['succeeded', 'failed'] },
+    durationMs: { type: Number, required: true },
+    errorCount: { type: Number, required: true },
+    warnCount: { type: Number },
+    outputSummary: { type: Schema.Types.Mixed },
+  },
+  { _id: false }
+);
+
+const ManifestArtifactSchema = new Schema(
+  {
+    kind: { type: String, required: true },
+    name: { type: String, required: true },
+    url: { type: String, required: true },
+    contentControlTitle: { type: String },
+  },
+  { _id: false }
+);
+
+// environment/inputs are free-form key/value trees (service versions, a normalized request
+// tree) rather than a fixed shape — Mixed here, same call as inputs.contentControls[].data below.
+const ManifestSchema = new Schema<IDocumentRunManifest>(
+  {
+    environment: { type: Schema.Types.Mixed },
+    inputs: { type: Schema.Types.Mixed },
+    steps: { type: [ManifestStepSchema], default: [] },
+    artifacts: { type: [ManifestArtifactSchema], default: [] },
   },
   { _id: false }
 );
@@ -61,6 +129,7 @@ const DocumentRunSchema = new Schema(
     templateName: { type: String },
     documentUrl: { type: String },
     errorChain: { type: [ErrorChainEntrySchema], default: [] },
+    manifest: { type: ManifestSchema },
     // Computed at creation from startedAt + retention, not updated on later writes, so
     // retention counts from when the run began rather than sliding forward on every update.
     expiresAt: { type: Date, required: true },

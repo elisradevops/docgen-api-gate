@@ -10,6 +10,8 @@ jest.mock('../../util/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
   error: jest.fn(),
+  readOwnVersion: jest.fn(() => '1.0.0-test'),
+  redactValue: jest.fn((value: unknown) => value),
 }));
 
 const genMock = { generateContentControls: jest.fn() };
@@ -59,7 +61,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -78,7 +80,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { templatePath: '' } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq({
       templateFile: '',
@@ -149,7 +151,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq({ uploadProperties: { bucketName: 'ATTACH_MENTS ' } });
     const res = buildRes();
@@ -173,7 +175,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://excel-doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -193,7 +195,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -238,7 +240,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -275,7 +277,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockRejectedValueOnce({ response: { data: { message: 'json-to-word failed' } } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -294,7 +296,7 @@ describe('DocumentsGeneratorController', () => {
           data: { message: 'schema invalid', code: 'MEWP_EXTERNAL_FILE_VALIDATION_FAILED' },
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -320,7 +322,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -366,7 +368,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {

@@ -15,6 +15,8 @@ jest.mock('../../util/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
   error: jest.fn(),
+  readOwnVersion: jest.fn(() => '1.0.0-test'),
+  redactValue: jest.fn((value: unknown) => value),
 }));
 
 const genMock = { generateContentControls: jest.fn() };
@@ -52,7 +54,7 @@ describe('DocumentsGeneratorController HTTP integration', () => {
       // Second call: json-to-word create document
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
 
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const appInstance = new App();
     const app = appInstance.app;
@@ -99,34 +101,38 @@ describe('DocumentsGeneratorController HTTP integration', () => {
       'L4 REQ ID',
       'L4 REQ Title',
     ];
-    genMock.generateContentControls.mockResolvedValueOnce([
-      {
-        title: 'mewp-l2-implementation-content-control',
-        isExcelSpreadsheet: true,
-        wordObjects: [
-          {
-            type: 'MewpCoverageReporter',
-            testPlanName: 'MEWP L2 Coverage - Mock Plan',
-            columnOrder: mewpCoverageColumns,
-            rows: [
-              {
-                'L2 REQ ID': 'SR0538',
-                'L2 REQ Title': 'Requirement 0538',
-                'L2 SubSystem': 'ESUK',
-                'L2 Run Status': 'Fail',
-                'Bug ID': 12345,
-                'Bug Title': 'Mock bug',
-                'Bug Responsibility': 'ESUK',
-                'L3 REQ ID': '9001',
-                'L3 REQ Title': 'Mock L3',
-                'L4 REQ ID': '',
-                'L4 REQ Title': '',
-              },
-            ],
-          },
-        ],
-      },
-    ]);
+    genMock.generateContentControls.mockResolvedValueOnce({
+      results: [
+        {
+          title: 'mewp-l2-implementation-content-control',
+          isExcelSpreadsheet: true,
+          wordObjects: [
+            {
+              type: 'MewpCoverageReporter',
+              testPlanName: 'MEWP L2 Coverage - Mock Plan',
+              columnOrder: mewpCoverageColumns,
+              rows: [
+                {
+                  'L2 REQ ID': 'SR0538',
+                  'L2 REQ Title': 'Requirement 0538',
+                  'L2 SubSystem': 'ESUK',
+                  'L2 Run Status': 'Fail',
+                  'Bug ID': 12345,
+                  'Bug Title': 'Mock bug',
+                  'Bug Responsibility': 'ESUK',
+                  'L3 REQ ID': '9001',
+                  'L3 REQ Title': 'Mock L3',
+                  'L4 REQ ID': '',
+                  'L4 REQ Title': '',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      steps: [],
+      artifacts: [],
+    });
 
     let excelCreateCalls = 0;
     (axios.post as jest.Mock).mockImplementation((url: string, payload: any) => {

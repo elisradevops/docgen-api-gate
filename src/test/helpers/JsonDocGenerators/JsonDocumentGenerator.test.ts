@@ -78,7 +78,12 @@ describe('JSONDocumentGenerator', () => {
 
     const result = await generator.generateContentControls(baseRequest);
 
-    expect(result).toEqual([{ result: 'r1' }, { result: 'r2' }]);
+    expect(result.results).toEqual([{ result: 'r1' }, { result: 'r2' }]);
+    expect(result.steps).toEqual([
+      expect.objectContaining({ name: 'CC1', type: 'generate-content-control', status: 'succeeded' }),
+      expect.objectContaining({ name: 'CC2', type: 'generate-content-control', status: 'succeeded' }),
+    ]);
+    expect(result.artifacts).toEqual([]);
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
 
     expect(mockedAxios.post).toHaveBeenCalledWith(
@@ -123,6 +128,14 @@ describe('JSONDocumentGenerator', () => {
     ).rejects.toMatchObject({
       contentControlFailures: [
         expect.objectContaining({ title: baseRequest.contentControls[0].title, message: 'boom' }),
+      ],
+      steps: [
+        expect.objectContaining({
+          name: baseRequest.contentControls[0].title,
+          type: 'generate-content-control',
+          status: 'failed',
+          errorCount: 1,
+        }),
       ],
     });
 

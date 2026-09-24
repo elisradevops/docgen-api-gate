@@ -16,7 +16,10 @@ export const withRunContext = winston.format((info) => {
 // config.auth.password) so a secret making it into a logger call doesn't also make it
 // into the log stream. This does not redact secrets interpolated into a message string
 // (see the corresponding call-site fixes) — it's a backstop for structured fields.
-const SENSITIVE_KEY = /token|pat|password|secret|authorization|minioaccesskey|miniosecretkey/i;
+// "accesskey" (not just "minioaccesskey") so this also catches AwsAccessKeyId — a real gap
+// found during the Phase 5 manifest work: only AwsSecretAccessKey was covered before, via
+// "secret", while its access-key-id sibling passed through unredacted.
+const SENSITIVE_KEY = /token|pat|password|secret|authorization|accesskey|minioaccesskey|miniosecretkey/i;
 
 // A per-key try/catch on the *read*, not just around the whole loop: a getter that throws
 // (e.g. `{ get boom() { throw ... } }`) would otherwise abort redaction for every remaining
@@ -31,7 +34,9 @@ function safeRead(obj: Record<string, unknown>, key: string): { ok: true; value:
     return { ok: false };
   }
 }
-function redactValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+// Exported for runManifest.ts, which applies it as a backstop over the free-form
+// per-content-control `data` blob before it's persisted into a run's manifest.inputs.
+export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
   if (depth > 6 || value === null || typeof value !== "object") return value;
   if (seen.has(value as object)) return "[Circular]";
   seen.add(value as object);
@@ -79,7 +84,9 @@ export const redact = winston.format((info) => {
 // Resolves the service's own version for defaultMeta. Mirrors JsonDocRoutes.ts's own
 // resilient package.json lookup (dev runs from src/, the built image runs from bin/ with
 // package.json copied alongside it — the exact relative path differs between the two).
-function readOwnVersion(): string {
+// Exported for runManifest.ts's environment layer — the same "which package.json am I
+// actually running from" resolution, not duplicated.
+export function readOwnVersion(): string {
   const candidates = [
     path.resolve(__dirname, "../package.json"),
     path.resolve(__dirname, "../../package.json"),
