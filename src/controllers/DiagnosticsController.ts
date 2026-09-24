@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { LogEvent, LOG_EVENT_RETENTION_MS } from '../models/LogEvent';
 import { computeSignature } from '../helpers/diagnostics/signature';
+import { upsertIssueForEvent } from '../helpers/diagnostics/issueUpsert';
 import { isMongoConnected } from '../util/mongodb';
 
 const MAX_BATCH_SIZE = 500;
@@ -151,6 +152,20 @@ export class DiagnosticsController {
       const toInsert = await applyPerRunCap(sanitized);
       if (toInsert.length > 0) {
         await LogEvent.insertMany(toInsert, { ordered: false });
+        await Promise.all(
+          toInsert
+            .filter((d) => d.level === 'warn' || d.level === 'error')
+            .map((d) =>
+              upsertIssueForEvent({
+                signature: d.signature as string,
+                service: d.service as string,
+                level: d.level as string,
+                version: d.version as string,
+                project: d.project as string | undefined,
+                runId: d.runId as string | undefined,
+              })
+            )
+        );
       }
       res.status(200).json({ accepted: sanitized.length, rejected });
     } catch (err) {

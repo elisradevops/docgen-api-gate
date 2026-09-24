@@ -11,6 +11,7 @@ import { DataProviderController } from '../controllers/DataProviderController';
 import { SharePointController } from '../controllers/SharePointController';
 import { AuthController } from '../controllers/AuthController';
 import { DiagnosticsController } from '../controllers/DiagnosticsController';
+import { IssueController } from '../controllers/IssueController';
 import { requireSession } from '../helpers/auth/requireSession';
 import { requireCsrf } from '../helpers/auth/requireCsrf';
 import { attachSessionIfPresent } from '../helpers/auth/attachSessionIfPresent';
@@ -28,6 +29,7 @@ export class Routes {
   public sharePointController: SharePointController = new SharePointController();
   public authController: AuthController = new AuthController();
   public diagnosticsController: DiagnosticsController = new DiagnosticsController();
+  public issueController: IssueController = new IssueController();
 
   public routes(app: any, upload: any): void {
     app.route('/health').get(async (_req: Request, res: Response) => {
@@ -458,6 +460,17 @@ export class Routes {
       .route('/diagnostics/logs')
       .post(requireIngestToken, (req: Request, res: Response) => {
         this.diagnosticsController.ingestLogs(req, res);
+      });
+
+    // Phase 6c — the Issue model's only mutation (no ignore/mute/assign). requireSession +
+    // requireCsrf is the /auth/logout precedent: the only existing route pair in this repo for
+    // "a mutation that must always have an acting user."
+    app
+      .route('/diagnostics/issues/:issueId/resolve')
+      .post(requireSession, requireCsrf, (req: Request, res: Response) => {
+        this.issueController.resolve(req, res).catch((err) => {
+          res.status(500).json({ message: `Failed to resolve issue: ${err}`, error: err });
+        });
       });
 
     app.route('/jsonDocument').get((req: Request, res: Response) => {

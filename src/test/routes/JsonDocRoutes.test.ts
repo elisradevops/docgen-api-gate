@@ -923,3 +923,20 @@ describe('JsonDocRoutes', () => {
     });
   });
 });
+
+describe('POST /diagnostics/issues/:issueId/resolve', () => {
+  function createAppAndRoutes(): any {
+    const AppClass = require('../../app').default as typeof App;
+    const appInstance = new AppClass();
+    return { app: appInstance.app, routes: appInstance.routePrv as any };
+  }
+
+  test('rejects with 401 when no session is present — requireSession runs before the controller', async () => {
+    const { app, routes } = createAppAndRoutes();
+    routes.issueController.resolve = jest.fn();
+
+    await withLocalAgent(app, (agent) => agent.post('/diagnostics/issues/issue-1/resolve').expect(401));
+
+    expect(routes.issueController.resolve).not.toHaveBeenCalled();
+  });
+});

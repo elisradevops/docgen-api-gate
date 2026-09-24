@@ -6,14 +6,23 @@ jest.mock('../../models/LogEvent', () => ({
   },
   LOG_EVENT_RETENTION_MS: 30 * 24 * 60 * 60 * 1000,
 }));
+// Issue upsert logic has its own dedicated test suite (issueUpsert.test.ts) — mocked here so
+// this file only needs a thin "was it called" integration check, not a real (unmocked) Mongo
+// model call that would otherwise hang the test.
+jest.mock('../../helpers/diagnostics/issueUpsert', () => ({
+  __esModule: true,
+  upsertIssueForEvent: jest.fn().mockResolvedValue(undefined),
+}));
 
 import App from '../../app';
 import mongoose from 'mongoose';
 import { withLocalAgent } from '../utils/localSupertest';
 import { LogEvent } from '../../models/LogEvent';
+import { upsertIssueForEvent } from '../../helpers/diagnostics/issueUpsert';
 
 const mockInsertMany = LogEvent.insertMany as jest.Mock;
 const mockCountDocuments = LogEvent.countDocuments as jest.Mock;
+const mockUpsertIssueForEvent = upsertIssueForEvent as jest.Mock;
 
 describe('POST /diagnostics/logs', () => {
   const ORIGINAL_TOKEN = process.env.DIAGNOSTICS_INGEST_TOKEN;
@@ -230,5 +239,23 @@ describe('POST /diagnostics/logs', () => {
     // Everything in the batch was truncated and no marker was needed (one already exists),
     // so there's nothing left to insert at all.
     expect(mockInsertMany).not.toHaveBeenCalled();
+  });
+
+  test('upserts an Issue for each warn/error event, not for debug/info', async () => {
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [
+            { level: 'error', service: 'dg-content-control', message: 'boom' },
+            { level: 'info', service: 'dg-content-control', message: 'fyi', runId: 'run-1' },
+          ],
+        })
+        .expect(200)
+    );
+    expect(mockUpsertIssueForEvent).toHaveBeenCalledTimes(1);
+    expect(mockUpsertIssueForEvent).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
 });

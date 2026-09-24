@@ -12,6 +12,7 @@ import { LogEvent, LOG_EVENT_RETENTION_MS, LOG_EVENT_MAX_DOCUMENTS } from '../..
 import { isMongoConnected } from '../../util/mongodb';
 import { runContextStore } from '../../util/runContext';
 import { computeSignature } from '../../helpers/diagnostics/signature';
+import { upsertIssueForEvent } from '../../helpers/diagnostics/issueUpsert';
 
 const FLUSH_INTERVAL_MS = Number(process.env.DIAGNOSTICS_FLUSH_INTERVAL_MS) || 2000;
 const FLUSH_BATCH_SIZE = Number(process.env.DIAGNOSTICS_FLUSH_BATCH_SIZE) || 500;
@@ -93,6 +94,20 @@ export class MongoLogSink implements LogSink {
       }));
       const toInsert = await this.applyPerRunCap(docs);
       await LogEvent.insertMany(toInsert, { ordered: false });
+      await Promise.all(
+        toInsert
+          .filter((d) => d.level === 'warn' || d.level === 'error')
+          .map((d) =>
+            upsertIssueForEvent({
+              signature: d.signature as string,
+              service: d.service as string,
+              level: d.level as string,
+              version: d.version as string,
+              project: d.project as string | undefined,
+              runId: d.runId as string | undefined,
+            })
+          )
+      );
       await this.pruneIfDue();
       if (this.droppedSinceLastWarning > 0) {
         // eslint-disable-next-line no-console

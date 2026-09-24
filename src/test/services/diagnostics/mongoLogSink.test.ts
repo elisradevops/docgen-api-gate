@@ -18,15 +18,24 @@ jest.mock('../../../util/mongodb', () => ({
   __esModule: true,
   isMongoConnected: jest.fn().mockReturnValue(true),
 }));
+// Issue upsert logic has its own dedicated test suite (issueUpsert.test.ts) — mocked here so
+// this file only needs a thin "was it called" integration check, not a real (unmocked) Mongo
+// model call that would otherwise hang the test.
+jest.mock('../../../helpers/diagnostics/issueUpsert', () => ({
+  __esModule: true,
+  upsertIssueForEvent: jest.fn().mockResolvedValue(undefined),
+}));
 
 import { LogEvent } from '../../../models/LogEvent';
 import { isMongoConnected } from '../../../util/mongodb';
+import { upsertIssueForEvent } from '../../../helpers/diagnostics/issueUpsert';
 import { MongoLogSink } from '../../../services/diagnostics/mongoLogSink';
 import type { DiagnosticEvent } from '../../../util/logSink';
 
 const mockInsertMany = LogEvent.insertMany as jest.Mock;
 const mockCountDocuments = LogEvent.countDocuments as jest.Mock;
 const mockIsMongoConnected = isMongoConnected as jest.Mock;
+const mockUpsertIssueForEvent = upsertIssueForEvent as jest.Mock;
 
 function makeEvent(overrides: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
   return {
@@ -174,5 +183,15 @@ describe('MongoLogSink', () => {
     await sink.flush();
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs).toHaveLength(0);
+  });
+
+  test('flush() upserts an Issue for each warn/error event, not for debug/info', async () => {
+    const sink = new MongoLogSink();
+    sink.push(makeEvent({ level: 'error', message: 'boom', runId: 'run-1' }));
+    sink.push(makeEvent({ level: 'warn', message: 'careful', runId: 'run-1' }));
+    await sink.flush();
+    expect(mockUpsertIssueForEvent).toHaveBeenCalledTimes(2);
+    expect(mockUpsertIssueForEvent).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
+    expect(mockUpsertIssueForEvent).toHaveBeenCalledWith(expect.objectContaining({ level: 'warn' }));
   });
 });
