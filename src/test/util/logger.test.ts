@@ -1,6 +1,7 @@
 import * as winston from 'winston';
 import Transport from 'winston-transport';
-import { redact } from '../../util/logger';
+import { redact, DiagnosticsTransport } from '../../util/logger';
+import { installLogSink, LogSink, DiagnosticEvent } from '../../util/logSink';
 
 const applyRedact = (info: Record<string, unknown>) => (redact() as any).transform({ ...info });
 
@@ -104,5 +105,85 @@ describe('logger pipeline — hostile inputs never throw', () => {
   ])('logger.error(%s) does not throw', (_label, value) => {
     const { logger } = makeTestLogger();
     expect(() => logger.error(value as any)).not.toThrow();
+  });
+});
+
+describe('DiagnosticsTransport (Phase 6a)', () => {
+  // Same shape as makeTestLogger() but with DiagnosticsTransport added, so this exercises the
+  // transport through the real pipeline (post-redact info) without depending on the real
+  // singleton logger's env-gated json()/textFormat branch.
+  function makeDiagnosticsLogger() {
+    const capture = new CaptureTransport();
+    const logger = winston.createLogger({
+      level: 'silly',
+      format: winston.format.combine(
+        winston.format.errors({ stack: true }),
+        winston.format.timestamp(),
+        redact(),
+        winston.format.splat(),
+        winston.format.json()
+      ),
+      transports: [capture, new DiagnosticsTransport()],
+    });
+    return { logger, capture };
+  }
+
+  test('pushes warn/error records to whatever sink is installed', () => {
+    const events: DiagnosticEvent[] = [];
+    const sink: LogSink = { push: (e) => events.push(e) };
+    installLogSink(sink);
+    const { logger } = makeDiagnosticsLogger();
+    logger.warn('a stable warning');
+    logger.error('a stable error', Object.assign(new Error('boom'), { code: 'ECONN' }));
+    expect(events).toHaveLength(2);
+    expect(events[0].level).toBe('warn');
+    expect(events[1].err?.code).toBe('ECONN');
+    expect(events[1].err?.stack).toEqual(expect.any(String));
+  });
+
+  test('does not push info/debug records', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    logger.info('not interesting to the dashboard');
+    expect(events).toHaveLength(0);
+  });
+
+  test('a throwing sink cannot break the log call', () => {
+    installLogSink({
+      push: () => {
+        throw new Error('sink is down');
+      },
+    });
+    const { logger } = makeDiagnosticsLogger();
+    expect(() => logger.error('still must not throw')).not.toThrow();
+  });
+
+  test.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['NaN', NaN],
+    ['a circular object', (() => { const c: any = { a: 1 }; c.self = c; return c; })()],
+    ['an object with a throwing getter', { get boom() { throw new Error('nope'); } }],
+    ['a BigInt', BigInt(9007199254740993)],
+    ['a Symbol', Symbol('x')],
+    ['an Error with no message', new Error()],
+    ['a 10MB string', 'x'.repeat(10 * 1024 * 1024)],
+  ])('logger.error(%s) with a sink installed does not throw', (_label, value) => {
+    installLogSink({ push: () => undefined });
+    const { logger } = makeDiagnosticsLogger();
+    expect(() => logger.error(value as any)).not.toThrow();
+  });
+});
+
+describe('textFormat safety (regression)', () => {
+  // The hostile-input matrix above exercises makeTestLogger()'s json() pipeline — it never
+  // touched the real singleton logger's text-format branch (LOG_FORMAT's default), which is
+  // where a Symbol message crashed: a template literal's implicit ToString throws on a Symbol,
+  // and this formatter sits with no try/catch around it.
+  test('logger.error(Symbol) does not throw through the real default-exported logger', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const logger = require('../../util/logger').default;
+    expect(() => logger.error(Symbol('x'))).not.toThrow();
   });
 });

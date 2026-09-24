@@ -10,9 +10,11 @@ import { DatabaseController } from '../controllers/DatabaseController';
 import { DataProviderController } from '../controllers/DataProviderController';
 import { SharePointController } from '../controllers/SharePointController';
 import { AuthController } from '../controllers/AuthController';
+import { DiagnosticsController } from '../controllers/DiagnosticsController';
 import { requireSession } from '../helpers/auth/requireSession';
 import { requireCsrf } from '../helpers/auth/requireCsrf';
 import { attachSessionIfPresent } from '../helpers/auth/attachSessionIfPresent';
+import { requireIngestToken } from '../helpers/auth/requireIngestToken';
 import { requireMongo } from '../helpers/db/requireMongo';
 import { probeMongoConnection } from '../util/mongodb';
 import { runContextStore } from '../util/runContext';
@@ -25,6 +27,7 @@ export class Routes {
   public dataProviderController: DataProviderController = new DataProviderController();
   public sharePointController: SharePointController = new SharePointController();
   public authController: AuthController = new AuthController();
+  public diagnosticsController: DiagnosticsController = new DiagnosticsController();
 
   public routes(app: any, upload: any): void {
     app.route('/health').get(async (_req: Request, res: Response) => {
@@ -444,6 +447,18 @@ export class Routes {
       }
       res.status(503).json({ ok: false, mongodb: 'disconnected' });
     });
+
+    // Phase 6a — relay path for services with no Mongo credentials of their own
+    // (docgen-content-control, forwarding its own logger's events plus
+    // docgen-data-provider-package's and docgen-dg-skins-package's). api-gate's own events go
+    // straight through MongoLogSink instead of this endpoint. Service-to-service only, guarded
+    // by a shared secret rather than requireSession (which resolves a user AuthSession — a
+    // service has none).
+    app
+      .route('/diagnostics/logs')
+      .post(requireIngestToken, (req: Request, res: Response) => {
+        this.diagnosticsController.ingestLogs(req, res);
+      });
 
     app.route('/jsonDocument').get((req: Request, res: Response) => {
       res.status(200).json({ status: 'online - ' + moment().format() });

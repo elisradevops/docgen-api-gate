@@ -4,8 +4,10 @@ import App from './app';
 import logger from './util/logger';
 import connectToDatabase, { disconnectMongo } from './util/mongodb';
 import { assertAuthConfig } from './util/authConfig';
+import { installMongoLogSink, MongoLogSink } from './services/diagnostics/mongoLogSink';
 
 const app = new App().app;
+let diagnosticsSink: MongoLogSink | undefined;
 
 // A Mongo-down request that isn't already caught locally (see
 // requireSession/requireMongo) would otherwise surface only as an
@@ -21,6 +23,10 @@ process.on('uncaughtException', (error: Error) => {
 
 const shutdown = async (signal: string) => {
   logger.info(`Received ${signal}, shutting down`);
+  // Flush before disconnecting — a buffered-but-unflushed batch would otherwise be lost, and
+  // disconnectMongo() below would make the flush no-op anyway (isMongoConnected() reads false).
+  diagnosticsSink?.stop();
+  await diagnosticsSink?.flush();
   // An open MongoClient socket keeps the event loop alive and can block
   // graceful pod termination.
   await disconnectMongo();
@@ -36,6 +42,7 @@ const startServer = async () => {
     // accepting any traffic.
     assertAuthConfig();
     await connectToDatabase();
+    diagnosticsSink = installMongoLogSink();
     app.listen(process.env.PORT || 3000, () => {
       logger.info(`dg-api-gate listening on port ${process.env.PORT || 3000}`);
       logger.info(`dg-content-control url: ${process.env.dgContentControlUrl}`);

@@ -1,7 +1,9 @@
 import * as winston from "winston";
 import * as fs from "fs";
 import * as path from "path";
+import Transport from "winston-transport";
 import { runContextStore } from "./runContext";
+import { getLogSink, DiagnosticEvent } from "./logSink";
 
 // Merges the ambient runId (set by attachRunContext, wrapping each request in
 // runContextStore.run(...)) into every log record emitted while handling that request.
@@ -103,9 +105,77 @@ export function readOwnVersion(): string {
   return "unknown";
 }
 
+// A template literal's implicit ToString throws on a Symbol value (unlike String(), which
+// calls Symbol.prototype.toString() explicitly) — logger.error(Symbol('x')) would otherwise
+// crash inside this formatter itself, the one place in the pipeline with no try/catch around
+// it. Symbol.toString() itself never throws, so this needs no further guarding.
+const safeMessageString = (value: unknown): string =>
+  typeof value === "symbol" ? value.toString() : String(value);
+
 const textFormat = winston.format.printf(
-  (info) => `${info.timestamp} - ${info.level}: ${info.message}`
+  (info) => `${info.timestamp} - ${info.level}: ${safeMessageString(info.message)}`
 );
+
+// Bounded so one oversized message/stack can't produce an unbounded LogEvent document.
+const MAX_MESSAGE_LEN = 2000;
+const MAX_STACK_LEN = 4000;
+function clamp(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+// Ships warn/error records to whatever LogSink this process has installed (mongoLogSink in
+// this repo; an HttpLogSink in docgen-content-control) so Phase 7's dashboard has a
+// queryable source. Reads info *after* the rest of the format chain has already run —
+// redact() has already scrubbed it by the time this transport sees it. Never throws, never
+// blocks the request path, and never logs through `logger` itself (that would recurse back
+// into this same transport) — failures go to console.error only.
+const DIAGNOSTICS_CAPTURE_ENABLED = (process.env.DIAGNOSTICS_CAPTURE_ENABLED || "true").toLowerCase() !== "false";
+// Exported for tests, the same treatment as redact()/withRunContext() — so a test pipeline
+// can exercise this transport without going through the real singleton logger's env-gated
+// json()/textFormat branch.
+export class DiagnosticsTransport extends Transport {
+  log(info: Record<string, unknown>, callback: () => void): void {
+    setImmediate(() => this.emit("logged", info));
+    try {
+      if (DIAGNOSTICS_CAPTURE_ENABLED && (info.level === "warn" || info.level === "error")) {
+        // winston.errors({stack:true}) merges an Error's own enumerable properties (stack,
+        // and anything else the call site set, e.g. `err.code`) directly onto `info` — there
+        // is no separate nested info.err. `info.stack`'s presence is the only reliable signal
+        // that this record came from `logger.error('...', err)`/`logger.error(err)` rather
+        // than a plain string message. When present, info.message is already the
+        // stable-message-plus-error-message string winston produced, so err.message reuses it.
+        const hasErr = typeof info.stack === "string";
+        const message = clamp(info.message, MAX_MESSAGE_LEN) ?? "";
+        const event: DiagnosticEvent = {
+          ts: typeof info.timestamp === "string" ? info.timestamp : new Date().toISOString(),
+          level: String(info.level),
+          service: String(info.service ?? "dg-api-gate"),
+          version: String(info.version ?? "unknown"),
+          runId: typeof info.runId === "string" ? info.runId : undefined,
+          step: typeof info.step === "string" ? info.step : undefined,
+          contentControlType: typeof info.contentControlType === "string" ? info.contentControlType : undefined,
+          contentControlTitle: typeof info.contentControlTitle === "string" ? info.contentControlTitle : undefined,
+          project: typeof info.project === "string" ? info.project : undefined,
+          userId: typeof info.userId === "string" ? info.userId : undefined,
+          message,
+          err: hasErr
+            ? {
+                message,
+                code: typeof info.code === "string" ? info.code : undefined,
+                stack: clamp(info.stack, MAX_STACK_LEN),
+              }
+            : undefined,
+        };
+        getLogSink()?.push(event);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("DiagnosticsTransport failed to push event", e);
+    }
+    callback();
+  }
+}
 
 // LOG_FORMAT=json is the eventual default (structured stdout a collector can parse), but
 // stays opt-in for one release so switching is a config change, not an image rebuild, if
@@ -138,7 +208,7 @@ const logger: winston.Logger = winston.createLogger({
   // until disk pressure evicts the pod. Under a read-only root filesystem (plausible
   // hardening for an accredited on-prem cluster) it throws at import time instead, which
   // is worse. `kubectl logs` is the only viewer that matters here.
-  transports: [new winston.transports.Console()],
+  transports: [new winston.transports.Console(), new DiagnosticsTransport()],
 });
 
 export default logger;
