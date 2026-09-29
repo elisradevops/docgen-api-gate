@@ -37,6 +37,9 @@ export interface IIssue extends Document {
   // the same time. "This was fixed and is now happening again" is a different fact from
   // "this keeps happening," and it's the one signal this model exists to keep.
   regressedAt?: Date;
+  // Original (un-normalized) message from the first occurrence — used for display so the UI
+  // shows the real text rather than the signature's normalization placeholders (<url>, <str>…).
+  message?: string;
 }
 
 const EnvironmentSchema = new Schema<IIssueEnvironment>(
@@ -64,6 +67,7 @@ const IssueSchema = new Schema(
     resolvedAt: { type: Date },
     resolvedBy: { type: String },
     regressedAt: { type: Date },
+    message: { type: String },
   },
   { timestamps: true }
 );

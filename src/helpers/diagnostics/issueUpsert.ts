@@ -10,6 +10,8 @@ import { Issue, ISSUE_OCCURRENCE_RUN_IDS_CAP } from '../../models/Issue';
 
 export interface IssueUpsertEvent {
   signature: string;
+  // Original un-normalized message stored on first occurrence for readable display.
+  message: string;
   service: string;
   level: string;
   version: string;
@@ -19,7 +21,7 @@ export interface IssueUpsertEvent {
 }
 
 export async function upsertIssueForEvent(event: IssueUpsertEvent): Promise<void> {
-  if (event.level !== 'warn' && event.level !== 'error') return;
+  if (event.level !== 'error') return;
   try {
     const now = new Date();
     // Both projects[] and docTypes[] are $addToSet — they must be ONE combined spread, not two
@@ -35,6 +37,7 @@ export async function upsertIssueForEvent(event: IssueUpsertEvent): Promise<void
         $setOnInsert: {
           status: 'unresolved',
           firstSeenAt: now,
+          message: event.message,
           environmentAtFirstSeen: { service: event.service, version: event.version },
         },
         $set: { lastSeenAt: now },

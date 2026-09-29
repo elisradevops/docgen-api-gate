@@ -19,27 +19,37 @@ describe('upsertIssueForEvent', () => {
   });
 
   test('skips debug/info events entirely', async () => {
-    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'debug', version: '1.0.0' });
-    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'info', version: '1.0.0' });
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'debug', version: '1.0.0' });
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'info', version: '1.0.0' });
     expect(mockFindOneAndUpdate).not.toHaveBeenCalled();
   });
 
-  test('upserts on a warn event, with $setOnInsert/$inc/$set and environmentAtFirstSeen', async () => {
+  test('skips warn events — only error level creates/updates issues', async () => {
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'warn', version: '1.0.0' });
+    expect(mockFindOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  test('upserts on an error event, with $setOnInsert/$inc/$set and environmentAtFirstSeen', async () => {
     mockFindOneAndUpdate.mockResolvedValue(null); // genuine insert
     await upsertIssueForEvent({
-      signature: 'no test cases found for suite: <n>',
-      service: '@elisra-devops/docgen-data-provider',
-      level: 'warn',
-      version: '1.140.0',
+      signature: 'failed to build compare report cannot read properties of undefined (reading <str>)',
+      message: "Failed to build compare report Cannot read properties of undefined (reading 'split')",
+      service: 'dg-api-gate',
+      level: 'error',
+      version: '1.0.0',
       project: 'elisradevops-project',
       runId: 'run-1',
     });
     expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(1);
     const [filter, update, opts] = mockFindOneAndUpdate.mock.calls[0];
-    expect(filter).toEqual({ signature: 'no test cases found for suite: <n>', service: '@elisra-devops/docgen-data-provider' });
+    expect(filter).toEqual({
+      signature: 'failed to build compare report cannot read properties of undefined (reading <str>)',
+      service: 'dg-api-gate',
+    });
     expect(update.$setOnInsert).toMatchObject({
       status: 'unresolved',
-      environmentAtFirstSeen: { service: '@elisra-devops/docgen-data-provider', version: '1.140.0' },
+      message: "Failed to build compare report Cannot read properties of undefined (reading 'split')",
+      environmentAtFirstSeen: { service: 'dg-api-gate', version: '1.0.0' },
     });
     expect(update.$inc).toEqual({ count: 1 });
     expect(update.$addToSet).toEqual({ projects: 'elisradevops-project' });
@@ -51,13 +61,13 @@ describe('upsertIssueForEvent', () => {
 
   test('a recurring but still-unresolved issue does not trigger the regression flip', async () => {
     mockFindOneAndUpdate.mockResolvedValue({ _id: 'issue-1', status: 'unresolved' });
-    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'error', version: '1.0.0' });
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'error', version: '1.0.0' });
     expect(mockUpdateOne).not.toHaveBeenCalled();
   });
 
   test('a resolved issue whose signature reappears flips back to unresolved with regressedAt — the regression case', async () => {
     mockFindOneAndUpdate.mockResolvedValue({ _id: 'issue-1', status: 'resolved' });
-    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'error', version: '1.0.0' });
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'error', version: '1.0.0' });
     expect(mockUpdateOne).toHaveBeenCalledTimes(1);
     const [filter, update] = mockUpdateOne.mock.calls[0];
     expect(filter).toEqual({ _id: 'issue-1' });
@@ -68,27 +78,25 @@ describe('upsertIssueForEvent', () => {
   test('never throws when Mongo fails', async () => {
     mockFindOneAndUpdate.mockRejectedValue(new Error('mongo is down'));
     await expect(
-      upsertIssueForEvent({ signature: 's', service: 'svc', level: 'error', version: '1.0.0' })
+      upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'error', version: '1.0.0' })
     ).resolves.toBeUndefined();
   });
 
   test('omits $addToSet/$push when project/runId are absent', async () => {
     mockFindOneAndUpdate.mockResolvedValue(null);
-    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'warn', version: '1.0.0' });
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'error', version: '1.0.0' });
     const [, update] = mockFindOneAndUpdate.mock.calls[0];
     expect(update.$addToSet).toBeUndefined();
     expect(update.$push).toBeUndefined();
   });
 
-  // Phase 7b regression test: project and docType both go into $addToSet. Before the fix,
-  // two separate `...(cond ? {$addToSet:{...}} : {})` spreads meant the second one silently
-  // overwrote the first in the final update object — this proves they now survive together.
-  test('adds both project and docType to $addToSet in the same update, one overwriting the other', async () => {
+  test('adds both project and docType to $addToSet in the same update', async () => {
     mockFindOneAndUpdate.mockResolvedValue(null);
     await upsertIssueForEvent({
       signature: 's',
+      message: 'm',
       service: 'svc',
-      level: 'warn',
+      level: 'error',
       version: '1.0.0',
       project: 'Cube-ADCS',
       docType: 'SVD',
@@ -99,7 +107,7 @@ describe('upsertIssueForEvent', () => {
 
   test('adds only docType to $addToSet when project is absent', async () => {
     mockFindOneAndUpdate.mockResolvedValue(null);
-    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'warn', version: '1.0.0', docType: 'SVD' });
+    await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'error', version: '1.0.0', docType: 'SVD' });
     const [, update] = mockFindOneAndUpdate.mock.calls[0];
     expect(update.$addToSet).toEqual({ docTypes: 'SVD' });
   });

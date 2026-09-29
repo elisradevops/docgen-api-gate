@@ -97,10 +97,11 @@ export class MongoLogSink implements LogSink {
       await LogEvent.insertMany(toInsert, { ordered: false });
       await Promise.all(
         toInsert
-          .filter((d) => d.level === 'warn' || d.level === 'error')
+          .filter((d) => d.level === 'error')
           .map((d) =>
             upsertIssueForEvent({
               signature: d.signature as string,
+              message: d.message as string,
               service: d.service as string,
               level: d.level as string,
               version: d.version as string,
