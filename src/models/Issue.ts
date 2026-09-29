@@ -20,9 +20,9 @@ export interface IIssue extends Document {
   lastSeenAt: Date;
   count: number;
   projects: string[];
-  // Left permanently unpopulated in this phase — same open gap as DocumentRun.docType
-  // (neither LogEvent nor DocumentRun carries a populated doc type today; guessing from
-  // templateFile's filename was already judged more likely to mislead than help).
+  // Populated via $addToSet in issueUpsert.ts (Phase 7b), same treatment as projects[] below.
+  // Sparse on historical data — only events from generations run after Phase 7b shipped have
+  // a docType to add.
   docTypes: string[];
   // Capped, most-recent-N, via $push+$slice — duplicates allowed (the same run re-triggering
   // the same signature is itself informative), unlike projects[] below.

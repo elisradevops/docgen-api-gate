@@ -22,6 +22,9 @@ export interface ILogEvent extends Document {
   service: string;
   version: string;
   runId?: string;
+  // Phase 7b — threaded the same way runId is, via RunContext (see util/runContext.ts). Sparse
+  // on historical data: only events from generations run after this shipped have it.
+  docType?: string;
   step?: string;
   contentControlType?: string;
   contentControlTitle?: string;
@@ -67,6 +70,7 @@ const LogEventSchema = new Schema(
     service: { type: String, required: true },
     version: { type: String, required: true },
     runId: { type: String },
+    docType: { type: String },
     step: { type: String },
     contentControlType: { type: String },
     contentControlTitle: { type: String },
@@ -87,5 +91,19 @@ LogEventSchema.index({ runId: 1, ts: 1 });
 // Top-errors / Issue keying (Phase 6b) and the Logs feed's default newest-first sort.
 LogEventSchema.index({ signature: 1, ts: -1 });
 LogEventSchema.index({ level: 1, ts: -1 });
+// Phase 7b — GET /diagnostics/events's default listing and cursor-pagination sort key. ts
+// alone isn't unique (a batched flush can share a timestamp across many docs), so the cursor
+// tuple is {ts, _id} and this index is shaped to match it exactly.
+LogEventSchema.index({ ts: -1, _id: -1 });
+// The two most likely single-dimension drill-downs for /diagnostics/events — error triage by
+// service, investigation by project. Deliberately not adding a docType-leading index: docType
+// is sparse (only new runs after Phase 7b have it), so a docType filter accepts a scan bounded
+// by the time range rather than justifying a fourth index on a high-write collection.
+LogEventSchema.index({ service: 1, ts: -1 });
+LogEventSchema.index({ project: 1, ts: -1 });
+// Free-text search over message for /diagnostics/events. Mongo allows only one text index per
+// collection; $text must be part of the pipeline's leading $match (always true here) and
+// cannot appear inside an $or.
+LogEventSchema.index({ message: 'text' });
 
 export const LogEvent = mongoose.model<ILogEvent>('LogEvent', LogEventSchema);

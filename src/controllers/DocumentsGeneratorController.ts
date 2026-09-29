@@ -13,6 +13,7 @@ import {
 } from '../models/DocumentRun';
 import { LogEvent } from '../models/LogEvent';
 import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
+import { resolveDocType } from '../helpers/runDocType';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
@@ -197,6 +198,15 @@ export class DocumentsGeneratorController {
     startedAt: Date,
     documentRequest: DocumentRequest
   ): Promise<void> {
+    const docType = resolveDocType(documentRequest);
+    // Set before the Mongo/runId guard below so every log emitted for this request — including
+    // ones from a run that never gets a DocumentRun record (no runId, or Mongo down) — still
+    // carries docType. runContextStore.run(obj, next) stores an object reference; mutating it
+    // here is visible to installRunIdForwarding's interceptor on every later outbound call.
+    if (runContext) {
+      runContext.docType = docType;
+      runContext.project = documentRequest.teamProjectName;
+    }
     if (!runContext?.runId || !isMongoConnected()) return;
     try {
       await DocumentRun.create({
@@ -206,6 +216,7 @@ export class DocumentsGeneratorController {
         startedAt,
         userId: documentRequest.userEmail,
         project: documentRequest.teamProjectName,
+        docType,
         templateName: documentRequest.templateFile,
         expiresAt: new Date(startedAt.getTime() + DOCUMENT_RUN_RETENTION_MS),
       });

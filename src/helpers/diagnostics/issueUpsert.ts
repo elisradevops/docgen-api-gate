@@ -15,12 +15,20 @@ export interface IssueUpsertEvent {
   version: string;
   project?: string;
   runId?: string;
+  docType?: string;
 }
 
 export async function upsertIssueForEvent(event: IssueUpsertEvent): Promise<void> {
   if (event.level !== 'warn' && event.level !== 'error') return;
   try {
     const now = new Date();
+    // Both projects[] and docTypes[] are $addToSet — they must be ONE combined spread, not two
+    // separate `$addToSet` keys: a second bare `{ $addToSet: {...} }` object spread after the
+    // first would silently overwrite it rather than merge, since both target the same top-level
+    // update key. Caught during Phase 7b planning before this became a real regression.
+    const addToSet: Record<string, string> = {};
+    if (event.project) addToSet.projects = event.project;
+    if (event.docType) addToSet.docTypes = event.docType;
     const before = await Issue.findOneAndUpdate(
       { signature: event.signature, service: event.service },
       {
@@ -31,7 +39,7 @@ export async function upsertIssueForEvent(event: IssueUpsertEvent): Promise<void
         },
         $set: { lastSeenAt: now },
         $inc: { count: 1 },
-        ...(event.project ? { $addToSet: { projects: event.project } } : {}),
+        ...(Object.keys(addToSet).length ? { $addToSet: addToSet } : {}),
         ...(event.runId ? { $push: { occurrenceRunIds: { $each: [event.runId], $slice: -ISSUE_OCCURRENCE_RUN_IDS_CAP } } } : {}),
       },
       { upsert: true, new: false }

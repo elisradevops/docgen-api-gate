@@ -17,6 +17,14 @@ export interface RunContext {
   // Client-settable (x-docgen-capture-mode), so same trust-boundary treatment as runId: only
   // the two named values survive attachRunContext's validation, anything else is dropped.
   captureMode?: 'verbose' | 'retain-on-failure';
+  // Phase 7b — set by DocumentsGeneratorController.createRunRecord *after* attachRunContext has
+  // already started the store's run() call, since docType and project are only knowable once
+  // the request body (not just headers) has been parsed. runContextStore.run(obj, next) stores
+  // an object reference, so mutating it here is visible to everything downstream in the same
+  // request, including installRunIdForwarding's interceptor on every later outbound call — no
+  // header at middleware time the way captureMode has one.
+  docType?: string;
+  project?: string;
 }
 
 // Symbol.for uses the global symbol registry, so every duplicated copy of this file across
@@ -80,6 +88,16 @@ export function installRunIdForwarding(instance: AxiosInstance): void {
       // x-docgen-run-id, so a run's capture mode survives the hop into the next process.
       if (store.captureMode) {
         (config.headers as Record<string, string>)['x-docgen-capture-mode'] = store.captureMode;
+      }
+      // Phase 7b — content-control's own attachRunContext reads this the same way it reads
+      // x-docgen-capture-mode, so docType survives the hop into the next process.
+      if (store.docType) {
+        (config.headers as Record<string, string>)['x-docgen-doc-type'] = store.docType;
+      }
+      // Phase 7c — project is set by DocumentsGeneratorController.createRunRecord after the
+      // store is already open; it's available by the time any outbound call is made.
+      if (store.project) {
+        (config.headers as Record<string, string>)['x-docgen-project'] = store.project;
       }
     }
     return config;

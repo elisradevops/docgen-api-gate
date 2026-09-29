@@ -8,8 +8,12 @@ import { getLogSink, DiagnosticEvent } from "./logSink";
 // Merges the ambient runId (set by attachRunContext, wrapping each request in
 // runContextStore.run(...)) into every log record emitted while handling that request.
 export const withRunContext = winston.format((info) => {
-  const runId = runContextStore.getStore()?.runId;
-  if (runId) (info as Record<string, unknown>).runId = runId;
+  const store = runContextStore.getStore();
+  if (store?.runId) (info as Record<string, unknown>).runId = store.runId;
+  // Phase 7b — same ambient, per-run treatment as runId (not a per-call-site field like
+  // project/step below, which callers pass explicitly).
+  if (store?.docType) (info as Record<string, unknown>).docType = store.docType;
+  if (store?.project) (info as Record<string, unknown>).project = store.project;
   return info;
 });
 
@@ -163,6 +167,7 @@ export class DiagnosticsTransport extends Transport {
           service: String(info.service ?? "dg-api-gate"),
           version: String(info.version ?? "unknown"),
           runId: typeof info.runId === "string" ? info.runId : undefined,
+          docType: typeof info.docType === "string" ? info.docType : undefined,
           step: typeof info.step === "string" ? info.step : undefined,
           contentControlType: typeof info.contentControlType === "string" ? info.contentControlType : undefined,
           contentControlTitle: typeof info.contentControlTitle === "string" ? info.contentControlTitle : undefined,

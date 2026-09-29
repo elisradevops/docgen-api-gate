@@ -51,6 +51,7 @@ function sanitizeEvent(raw: unknown): Record<string, unknown> | undefined {
     service: clampString(event.service, 200),
     version: clampString(event.version, 100) ?? 'unknown',
     runId: clampString(event.runId, 100),
+    docType: clampString(event.docType, 40),
     step: clampString(event.step, 200),
     contentControlType: clampString(event.contentControlType, 200),
     contentControlTitle: clampString(event.contentControlTitle, 200),
@@ -163,6 +164,7 @@ export class DiagnosticsController {
                 version: d.version as string,
                 project: d.project as string | undefined,
                 runId: d.runId as string | undefined,
+                docType: d.docType as string | undefined,
               })
             )
         );

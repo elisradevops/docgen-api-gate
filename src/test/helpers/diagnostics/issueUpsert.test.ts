@@ -79,4 +79,28 @@ describe('upsertIssueForEvent', () => {
     expect(update.$addToSet).toBeUndefined();
     expect(update.$push).toBeUndefined();
   });
+
+  // Phase 7b regression test: project and docType both go into $addToSet. Before the fix,
+  // two separate `...(cond ? {$addToSet:{...}} : {})` spreads meant the second one silently
+  // overwrote the first in the final update object — this proves they now survive together.
+  test('adds both project and docType to $addToSet in the same update, one overwriting the other', async () => {
+    mockFindOneAndUpdate.mockResolvedValue(null);
+    await upsertIssueForEvent({
+      signature: 's',
+      service: 'svc',
+      level: 'warn',
+      version: '1.0.0',
+      project: 'Cube-ADCS',
+      docType: 'SVD',
+    });
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$addToSet).toEqual({ projects: 'Cube-ADCS', docTypes: 'SVD' });
+  });
+
+  test('adds only docType to $addToSet when project is absent', async () => {
+    mockFindOneAndUpdate.mockResolvedValue(null);
+    await upsertIssueForEvent({ signature: 's', service: 'svc', level: 'warn', version: '1.0.0', docType: 'SVD' });
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$addToSet).toEqual({ docTypes: 'SVD' });
+  });
 });

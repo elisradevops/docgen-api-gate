@@ -81,6 +81,7 @@ export class MongoLogSink implements LogSink {
         service: event.service,
         version: event.version,
         runId: event.runId,
+        docType: event.docType,
         step: event.step,
         contentControlType: event.contentControlType,
         contentControlTitle: event.contentControlTitle,
@@ -105,6 +106,7 @@ export class MongoLogSink implements LogSink {
               version: d.version as string,
               project: d.project as string | undefined,
               runId: d.runId as string | undefined,
+              docType: d.docType as string | undefined,
             })
           )
       );

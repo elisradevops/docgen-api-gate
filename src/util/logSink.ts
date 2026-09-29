@@ -10,6 +10,7 @@ export interface DiagnosticEvent {
   service: string;
   version: string;
   runId?: string;
+  docType?: string;
   step?: string;
   contentControlType?: string;
   contentControlTitle?: string;

@@ -139,5 +139,10 @@ const DocumentRunSchema = new Schema(
 
 DocumentRunSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 DocumentRunSchema.index({ status: 1, startedAt: -1 });
+// Phase 7a's /diagnostics/overview counts runs in a startedAt window regardless of status —
+// {status:1, startedAt:-1} can't lead a startedAt-only range scan.
+DocumentRunSchema.index({ startedAt: -1 });
+// Phase 7c's baseline auto-selection ("most recent succeeded run of the same project+docType").
+DocumentRunSchema.index({ project: 1, docType: 1, status: 1, startedAt: -1 });
 
 export const DocumentRun = mongoose.model<IDocumentRun>('DocumentRun', DocumentRunSchema);

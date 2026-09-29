@@ -931,12 +931,18 @@ describe('POST /diagnostics/issues/:issueId/resolve', () => {
     return { app: appInstance.app, routes: appInstance.routePrv as any };
   }
 
-  test('rejects with 401 when no session is present — requireSession runs before the controller', async () => {
+  test('does not require a session — requireSession was removed; 401 must not be returned', async () => {
+    // The app has no role model; requireSession was removed so that resolve works for all users
+    // in the normal ADO-PAT login path (which never establishes a SharePoint SSO session).
+    // requireMongo may still return 503 when Mongo is not connected in the test environment —
+    // that is acceptable; the assertion is specifically that the session guard is gone (no 401).
     const { app, routes } = createAppAndRoutes();
-    routes.issueController.resolve = jest.fn();
+    routes.issueController.resolve = jest.fn().mockResolvedValue(undefined);
 
-    await withLocalAgent(app, (agent) => agent.post('/diagnostics/issues/issue-1/resolve').expect(401));
-
-    expect(routes.issueController.resolve).not.toHaveBeenCalled();
+    await withLocalAgent(app, (agent) =>
+      agent.post('/diagnostics/issues/issue-1/resolve').expect((res) => {
+        expect(res.status).not.toBe(401);
+      })
+    );
   });
 });
