@@ -1,9 +1,14 @@
 const mockFind = jest.fn();
 const mockAggregate = jest.fn();
+const mockCountDocuments = jest.fn();
 
 jest.mock('../../../models/LogEvent', () => ({
   __esModule: true,
-  LogEvent: { find: (...args: any[]) => mockFind(...args), aggregate: (...args: any[]) => mockAggregate(...args) },
+  LogEvent: {
+    find: (...args: any[]) => mockFind(...args),
+    aggregate: (...args: any[]) => mockAggregate(...args),
+    countDocuments: (...args: any[]) => mockCountDocuments(...args),
+  },
 }));
 
 import {
@@ -48,6 +53,14 @@ describe('buildMatch', () => {
 
   test('omits an empty array filter rather than matching nothing via $in: []', () => {
     expect(buildMatch({ service: [] })).toEqual({});
+  });
+
+  test('matches runId as an anchored prefix, not an exact value', () => {
+    expect(buildMatch({ runId: 'abc123' })).toEqual({ runId: { $regex: '^abc123' } });
+  });
+
+  test('escapes regex metacharacters in runId so a literal value cannot be injected as a pattern', () => {
+    expect(buildMatch({ runId: 'a.b*c' })).toEqual({ runId: { $regex: '^a\\.b\\*c' } });
   });
 });
 
@@ -140,6 +153,27 @@ describe('listEvents', () => {
 
     expect(findChain.limit).toHaveBeenCalledWith(201); // MAX_LIST_LIMIT (200) + 1 lookahead
   });
+
+  test('omits matchedCount and never calls countDocuments when includeCount is not set', async () => {
+    mockFind.mockReturnValue(chainable([]));
+
+    const result = await listEvents({ filters: {} });
+
+    expect(result.matchedCount).toBeUndefined();
+    expect(mockCountDocuments).not.toHaveBeenCalled();
+  });
+
+  test('includes matchedCount, counted over the pre-cursor match, when includeCount is set', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    mockCountDocuments.mockResolvedValue(342);
+    const cursor = encodeCursor('ts', { ts: new Date('2026-01-01'), service: 's', level: 'error', _id: '507f1f77bcf86cd799439011' } as any);
+
+    const result = await listEvents({ filters: { service: ['json-to-word'] }, cursor, includeCount: true });
+
+    expect(result.matchedCount).toBe(342);
+    // Counted over the base filters only — not the $and-wrapped cursor condition passed to find().
+    expect(mockCountDocuments).toHaveBeenCalledWith({ service: { $in: ['json-to-word'] } });
+  });
 });
 
 describe('getEventFacets', () => {
@@ -184,7 +218,7 @@ describe('getEventFacets', () => {
     await getEventFacets({ since, runId: 'run-1', q: 'timeout' });
 
     const pipeline = mockAggregate.mock.calls[0][0];
-    expect(pipeline[0].$match).toEqual({ ts: { $gte: since }, runId: 'run-1', $text: { $search: 'timeout' } });
+    expect(pipeline[0].$match).toEqual({ ts: { $gte: since }, runId: { $regex: '^run-1' }, $text: { $search: 'timeout' } });
     expect(pipeline[1].$facet).toBeDefined();
   });
 });

@@ -4,6 +4,10 @@
 import mongoose from 'mongoose';
 import { LogEvent } from '../../models/LogEvent';
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export interface EventFilters {
   level?: string[];
   service?: string[];
@@ -32,7 +36,10 @@ export function buildMatch(filters: EventFilters, exclude?: FilterDimension): Re
     if (filters.until) range.$lte = filters.until;
     match.ts = range;
   }
-  if (filters.runId) match.runId = filters.runId;
+  // Prefix match, not exact — the Logs table only ever displays a truncated runId (the first
+  // 8 chars), so requiring the full UUID here would make that displayed value unusable as a
+  // filter. Anchored (`^`) so it still uses the {runId:1, ts:1} index instead of a full scan.
+  if (filters.runId) match.runId = { $regex: `^${escapeRegExp(filters.runId)}` };
   // $text is safe here (not nested inside an $or) — the cursor condition that IS an $or is
   // combined via a separate top-level $and in listEvents, never inside this object.
   if (filters.q) match.$text = { $search: filters.q };
@@ -101,6 +108,11 @@ export interface ListEventsParams {
   sortDir?: SortDir;
   cursor?: string;
   limit?: number;
+  // Opt-in only — the Logs explorer's live-tail poll needs to know how many events matched its
+  // (narrow, incremental) window versus how many the page actually returned, to show a "+N more
+  // events" burst signal. Initial load / "load older" never set this, so they pay no extra
+  // countDocuments cost.
+  includeCount?: boolean;
 }
 
 export async function listEvents(params: ListEventsParams) {
@@ -113,15 +125,20 @@ export async function listEvents(params: ListEventsParams) {
 
   const sortDirection = sortDir === 'asc' ? 1 : -1;
   // Fetch one extra to know whether a next page exists without a separate countDocuments.
-  const docs = await LogEvent.find(finalMatch)
-    .sort({ [sortBy]: sortDirection, _id: sortDirection } as Record<string, 1 | -1>)
-    .limit(limit + 1)
-    .lean();
+  const [docs, matchedCount] = await Promise.all([
+    LogEvent.find(finalMatch)
+      .sort({ [sortBy]: sortDirection, _id: sortDirection } as Record<string, 1 | -1>)
+      .limit(limit + 1)
+      .lean(),
+    // Counted over `base` (pre-cursor), not `finalMatch` — this is "how many match the filters
+    // overall", not "how many remain after this page's cursor position".
+    params.includeCount ? LogEvent.countDocuments(base) : Promise.resolve(undefined),
+  ]);
 
   const hasMore = docs.length > limit;
   const page = hasMore ? docs.slice(0, limit) : docs;
   const nextCursor = hasMore ? encodeCursor(sortBy, page[page.length - 1] as any) : undefined;
-  return { events: page, nextCursor };
+  return { events: page, nextCursor, matchedCount };
 }
 
 const FACET_LIMIT = 200; // Phase 7's own acceptance test requires staying usable past 100 values.

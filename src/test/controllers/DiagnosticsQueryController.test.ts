@@ -227,6 +227,17 @@ describe('DiagnosticsQueryController', () => {
       expect(mockListEvents).toHaveBeenCalledWith(expect.objectContaining({ sortBy: undefined }));
     });
 
+    test('passes includeCount through only when the query param is the literal string "true"', async () => {
+      mockListEvents.mockResolvedValue({ events: [] });
+
+      await controller.listEvents({ query: { includeCount: 'true' } } as any, buildRes());
+      expect(mockListEvents).toHaveBeenCalledWith(expect.objectContaining({ includeCount: true }));
+
+      mockListEvents.mockClear();
+      await controller.listEvents({ query: {} } as any, buildRes());
+      expect(mockListEvents).toHaveBeenCalledWith(expect.objectContaining({ includeCount: false }));
+    });
+
     test('clamps a since older than the retention window forward to the oldest retained instant', async () => {
       mockListEvents.mockResolvedValue({ events: [] });
 

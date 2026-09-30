@@ -129,6 +129,7 @@ export class DiagnosticsQueryController {
         sortDir: parseSortDir(req.query.sortDir),
         cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
         limit: parsePositiveInt(req.query.limit),
+        includeCount: req.query.includeCount === 'true',
       });
       res.status(200).json(result);
     } catch (err) {

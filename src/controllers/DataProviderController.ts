@@ -3,6 +3,7 @@ import axios, { AxiosInstance } from 'axios';
 import http from 'http';
 import https from 'https';
 import { installRunIdForwarding } from '../util/runContext';
+import logger from '../util/logger';
 
 export class DataProviderController {
   private ccClient: AxiosInstance;
@@ -50,6 +51,7 @@ export class DataProviderController {
           : typeof upstreamData?.message === 'string'
           ? upstreamData.message
           : '';
+      logger.error(`forward ${path} failed: status=${status} ${err?.message}`, err);
       res.status(status).json({
         message: upstreamMessage || `Upstream error calling ${path}`,
         upstreamPath: path,
