@@ -18,6 +18,16 @@ export interface DiagnosticEvent {
   userId?: string;
   message: string;
   err?: { message: string; code?: string; stack?: string };
+  // A sanitized description of the failed outbound request (set by the data-provider on ADO
+  // failures) — kept in sync with docgen-data-provider-package's copy of this type.
+  context?: {
+    method?: string;
+    url?: string;
+    status?: number;
+    attempt?: number;
+    requestBody?: string;
+    responseExcerpt?: string;
+  };
   // Phase 6b — set on a debug/info event captured under retain-on-failure. Deleted by
   // api-gate at the run's one success point; left alone (and thus permanent, subject to the
   // normal TTL) if the run fails.

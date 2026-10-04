@@ -131,6 +131,65 @@ describe('POST /diagnostics/logs', () => {
     expect(docs[0].minioSecretKey).toBeUndefined();
   });
 
+  test('persists a request context for a failed ADO call, allowlisted and bounded', async () => {
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [
+            {
+              level: 'error',
+              service: '@elisra-devops/docgen-data-provider',
+              message: 'Request failed with status code 404',
+              context: {
+                method: 'GET',
+                url: 'https://dev.azure.com/org/_apis/wit/queries/q1',
+                status: 404,
+                attempt: 1,
+                requestBody: 'b'.repeat(5000),
+                responseExcerpt: 'TF401232: Work item 5 does not exist',
+                // Not part of the shape — an untrusted sender could add anything here.
+                authorization: 'Bearer should-never-reach-mongo',
+              },
+            },
+          ],
+        })
+        .expect(200)
+    );
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs[0].context).toEqual({
+      method: 'GET',
+      url: 'https://dev.azure.com/org/_apis/wit/queries/q1',
+      status: 404,
+      attempt: 1,
+      requestBody: 'b'.repeat(2000),
+      responseExcerpt: 'TF401232: Work item 5 does not exist',
+    });
+    expect(JSON.stringify(docs[0])).not.toContain('should-never-reach-mongo');
+  });
+
+  test('drops a malformed context rather than failing the event', async () => {
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({
+          events: [
+            { level: 'error', service: 's', message: 'm1', context: 'not-an-object' },
+            { level: 'error', service: 's', message: 'm2', context: { status: 'nope', attempt: null, url: 123 } },
+            { level: 'error', service: 's', message: 'm3' },
+          ],
+        })
+        .expect(200)
+    );
+    const [docs] = mockInsertMany.mock.calls[0];
+    expect(docs).toHaveLength(3);
+    expect(docs.every((d: any) => d.context === undefined)).toBe(true);
+  });
+
   test('accepts debug/info levels (Phase 6b — verbose/retain-on-failure capture)', async () => {
     const app = createApp();
     const res = await withLocalAgent(app, (agent) =>

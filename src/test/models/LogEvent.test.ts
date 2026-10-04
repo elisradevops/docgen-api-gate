@@ -44,6 +44,17 @@ describe('LogEvent schema', () => {
     }
   );
 
+  test('accepts an optional request context and keeps only its declared fields', () => {
+    const doc = new LogEvent({
+      ...validFields,
+      context: { method: 'GET', url: 'https://h/x', status: 404, attempt: 1, requestBody: '{}', responseExcerpt: 'r', stray: 'x' },
+    });
+    expect(doc.validateSync()).toBeUndefined();
+    expect(doc.context?.url).toBe('https://h/x');
+    expect(doc.context?.status).toBe(404);
+    expect((doc.context as any).stray).toBeUndefined();
+  });
+
   test('accepts an optional retainPending flag', () => {
     const doc = new LogEvent({ ...validFields, level: 'debug', retainPending: true });
     expect(doc.validateSync()).toBeUndefined();

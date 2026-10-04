@@ -29,6 +29,31 @@ const CAPTURED_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 // verbose/retain-on-failure, so normal-mode runs never pay the extra count-query cost either.
 const PER_RUN_CAP = Number(process.env.DIAGNOSTICS_PER_RUN_MAX_EVENTS) || 20_000;
 
+// Keep in step with CONTEXT_LIMITS in docgen-data-provider-package/src/utils/logSink.ts.
+const MAX_CONTEXT_URL_LEN = 1000;
+const MAX_CONTEXT_BODY_LEN = 2000;
+const MAX_CONTEXT_RESPONSE_LEN = 300;
+
+// Allowlisted keys only, each type-checked and bounded — the sending service already
+// sanitized this, but ingest is the trust boundary, so it re-validates rather than trusting
+// the shape (nothing outside this list can ever reach the collection through this field).
+function sanitizeContext(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as Record<string, unknown>;
+  const context: Record<string, unknown> = {};
+  const method = clampString(c.method, 10);
+  const url = clampString(c.url, MAX_CONTEXT_URL_LEN);
+  const requestBody = clampString(c.requestBody, MAX_CONTEXT_BODY_LEN);
+  const responseExcerpt = clampString(c.responseExcerpt, MAX_CONTEXT_RESPONSE_LEN);
+  if (method) context.method = method;
+  if (url) context.url = url;
+  if (requestBody) context.requestBody = requestBody;
+  if (responseExcerpt) context.responseExcerpt = responseExcerpt;
+  if (typeof c.status === 'number' && Number.isFinite(c.status)) context.status = c.status;
+  if (typeof c.attempt === 'number' && Number.isFinite(c.attempt)) context.attempt = c.attempt;
+  return Object.keys(context).length ? context : undefined;
+}
+
 function sanitizeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const event = raw as Record<string, unknown>;
@@ -59,6 +84,7 @@ function sanitizeEvent(raw: unknown): Record<string, unknown> | undefined {
     userId: clampString(event.userId, 200),
     message,
     err,
+    context: sanitizeContext(event.context),
     signature: computeSignature(message),
     expiresAt: new Date(Date.now() + LOG_EVENT_RETENTION_MS),
     retainPending: event.retainPending === true ? true : undefined,
