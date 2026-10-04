@@ -666,6 +666,31 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
     (mongoose.connection as any).readyState = prevReadyState;
   });
 
+  test('stores captureMode on the run only when verbose capture was requested AND authorized', async () => {
+    // First post = check-org-url validation, then the two generation calls.
+    axios.post.mockReset();
+    axios.post
+      .mockResolvedValueOnce({ data: { valid: true } })
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    await runContextStore.run({ runId: 'run-cap-ok', requestedCaptureMode: 'verbose' }, () =>
+      controller.createJSONDoc(makeReq(), buildRes())
+    );
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-cap-ok', captureMode: 'verbose' }));
+  });
+
+  test('ignores a capture request whose credentials fail validation, and still generates', async () => {
+    axios.post.mockReset();
+    axios.post
+      .mockRejectedValueOnce(new Error('Request failed with status code 401'))
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    await runContextStore.run({ runId: 'run-cap-bad', requestedCaptureMode: 'verbose' }, () =>
+      controller.createJSONDoc(makeReq({ PAT: 'bad-pat-for-this-test' }), buildRes())
+    );
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-cap-bad', captureMode: undefined }));
+  });
+
   test('persists the explicit docType from the request', async () => {
     await runContextStore.run({ runId: 'run-explicit' }, () =>
       controller.createJSONDoc(makeReq({ docType: 'svd' }), buildRes())

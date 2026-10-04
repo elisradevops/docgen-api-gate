@@ -51,7 +51,11 @@ export class DataProviderController {
           : typeof upstreamData?.message === 'string'
           ? upstreamData.message
           : '';
-      logger.error(`forward ${path} failed: status=${status} ${err?.message}`, err);
+      // content-control answered with an error: it already recorded the root cause at error level,
+      // so this relay is a warning. No response at all (unreachable, reset) is this hop's own
+      // failure and stays an error.
+      const log = err?.response ? logger.warn : logger.error;
+      log.call(logger, `forward ${path} failed: status=${status} ${err?.message}`, err);
       res.status(status).json({
         message: upstreamMessage || `Upstream error calling ${path}`,
         upstreamPath: path,

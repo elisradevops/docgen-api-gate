@@ -109,10 +109,27 @@ describe('DataProviderController', () => {
     });
     // Previously this controller had no logger import at all — every one of its ~28 handlers'
     // upstream failures went straight into the HTTP response with no server-side log line.
-    expect(loggerMod.error).toHaveBeenCalledWith(
+    // content-control answered with an error, so it already recorded the root cause at error
+    // level: this relay is a warning, not a second error.
+    expect(loggerMod.warn).toHaveBeenCalledWith(
       expect.stringContaining('/azure/git/repos/r1/pull-requests'),
       expect.anything()
     );
+    expect(loggerMod.error).not.toHaveBeenCalled();
+  });
+
+  test('forward: an upstream that never answered (no response) is this hop\'s own failure and stays an error', async () => {
+    const req: any = {
+      headers: { 'x-ado-org-url': 'https://org', 'x-ado-pat': 'pat' },
+      params: { repoId: 'r1' },
+      query: { teamProjectId: 'tp' },
+    };
+    axiosMod.create().post.mockRejectedValueOnce(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+
+    await controller.getRepoPullRequests(req, buildRes());
+
+    expect(loggerMod.error).toHaveBeenCalledWith(expect.stringContaining('socket hang up'), expect.anything());
+    expect(loggerMod.warn).not.toHaveBeenCalled();
   });
 
   /**

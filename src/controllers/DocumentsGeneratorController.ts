@@ -18,6 +18,7 @@ import { LogEvent, LOG_EVENT_RETENTION_MS } from '../models/LogEvent';
 const RETAIN_PENDING_GRACE_MS = 10 * 60 * 1000;
 import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
 import { resolveDocType } from '../helpers/runDocType';
+import { authorizeCaptureMode } from '../helpers/diagnostics/captureAuthorization';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
@@ -30,6 +31,8 @@ export class DocumentsGeneratorController {
         const documentRequest: DocumentRequest = JSON.parse(json);
         this.applyUploadDefaults(documentRequest);
         this.normalizeBucket(documentRequest);
+        // Before the run record, so the record (and every later log) reflects the effective mode.
+        await authorizeCaptureMode(runContext, documentRequest.tfsCollectionUri, documentRequest.PAT);
         await this.createRunRecord(runContext, startedAt, documentRequest);
         const jsonDocumentGenerator: JSONDocumentGenerator = new JSONDocumentGenerator();
 
@@ -222,6 +225,7 @@ export class DocumentsGeneratorController {
         userId: documentRequest.userEmail,
         project: documentRequest.teamProjectName,
         docType,
+        captureMode: runContext.captureMode,
         templateName: documentRequest.templateFile,
         expiresAt: new Date(startedAt.getTime() + DOCUMENT_RUN_RETENTION_MS),
       });
