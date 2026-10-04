@@ -4,14 +4,25 @@ import mongoose, { Schema, Document } from 'mongoose';
 // DiagnosticsTransport output) and by POST /diagnostics/logs (batches relayed from
 // docgen-content-control, which forwards its own logger's events plus
 // docgen-data-provider-package's and docgen-dg-skins-package's — those two packages run
-// in-process inside content-control, not as separate services). err is intentionally
-// narrow — {message, code, stack} — a settled Phase 6 schema decision, no generic
-// extra-fields bucket: Phase 4-style extra fields (e.g. tfs.ts's url/status/attempt) stay
-// stdout-only, visible via `kubectl logs`.
+// in-process inside content-control, not as separate services). err stays narrow —
+// {message, code, stack}. `context` is the one deliberate exception to Phase 6's "no generic
+// extra-fields bucket": a fixed, allowlisted description of the failed outbound request the
+// data-provider attaches to an ADO error (url, method, status, attempt, request-body summary,
+// response excerpt). Without it a 404 in the dashboard can't be traced to the call behind it —
+// the url stayed stdout-only before, which is exactly where it was no use to the dashboard.
 export interface ILogEventErr {
   message: string;
   code?: string;
   stack?: string;
+}
+
+export interface ILogEventContext {
+  method?: string;
+  url?: string;
+  status?: number;
+  attempt?: number;
+  requestBody?: string;
+  responseExcerpt?: string;
 }
 
 export interface ILogEvent extends Document {
@@ -32,6 +43,7 @@ export interface ILogEvent extends Document {
   userId?: string;
   message: string;
   err?: ILogEventErr;
+  context?: ILogEventContext;
   signature: string;
   // Computed at creation from ts + retention, not updated on later writes — same rule as
   // DocumentRun.expiresAt, so retention counts from when the event was recorded rather than
@@ -41,6 +53,18 @@ export interface ILogEvent extends Document {
   // DocumentsGeneratorController at the run's one success point; left alone if the run fails.
   retainPending?: boolean;
 }
+
+const ContextSchema = new Schema<ILogEventContext>(
+  {
+    method: { type: String },
+    url: { type: String },
+    status: { type: Number },
+    attempt: { type: Number },
+    requestBody: { type: String },
+    responseExcerpt: { type: String },
+  },
+  { _id: false }
+);
 
 const ErrSchema = new Schema<ILogEventErr>(
   {
@@ -78,6 +102,7 @@ const LogEventSchema = new Schema(
     userId: { type: String },
     message: { type: String, required: true },
     err: { type: ErrSchema },
+    context: { type: ContextSchema },
     signature: { type: String, required: true },
     expiresAt: { type: Date, required: true },
     retainPending: { type: Boolean },
