@@ -185,13 +185,15 @@ describe('MongoLogSink', () => {
     expect(docs).toHaveLength(0);
   });
 
-  test('flush() upserts an Issue for each warn/error event, not for debug/info', async () => {
+  test('flush() upserts an Issue for each error event, not for warn/debug/info', async () => {
+    // issueUpsert.ts's guard is error-level only (see "Fix Issue triage" — warn events stopped
+    // creating/updating Issue documents; the restriction lives in mongoLogSink.ts's own
+    // `.filter((d) => d.level === 'error')` immediately above its upsertIssueForEvent call).
     const sink = new MongoLogSink();
     sink.push(makeEvent({ level: 'error', message: 'boom', runId: 'run-1' }));
     sink.push(makeEvent({ level: 'warn', message: 'careful', runId: 'run-1' }));
     await sink.flush();
-    expect(mockUpsertIssueForEvent).toHaveBeenCalledTimes(2);
+    expect(mockUpsertIssueForEvent).toHaveBeenCalledTimes(1);
     expect(mockUpsertIssueForEvent).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
-    expect(mockUpsertIssueForEvent).toHaveBeenCalledWith(expect.objectContaining({ level: 'warn' }));
   });
 });
