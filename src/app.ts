@@ -74,6 +74,10 @@ export default class App {
     // into several MB) exceeds. Env-overridable, following the same pattern
     // as the multer fileSize cap above.
     const jsonBodyLimitBytes = Number(process.env.API_JSON_BODY_MAX_BYTES || 50 * 1024 * 1024);
+    // The diagnostics relay batches at most 500 clamped events (a few hundred KB); registered
+    // first so its parser — and its tighter limit — handles the body before the global one.
+    const ingestBodyLimitBytes = Number(process.env.DIAGNOSTICS_INGEST_MAX_BYTES || 2 * 1024 * 1024);
+    this.app.use('/diagnostics/logs', express.json({ limit: ingestBodyLimitBytes }));
     this.app.use(express.json({ limit: jsonBodyLimitBytes }));
     this.app.use(express.urlencoded({ extended: false, limit: jsonBodyLimitBytes }));
   }

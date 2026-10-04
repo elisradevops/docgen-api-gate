@@ -5,6 +5,7 @@ import logger from './util/logger';
 import connectToDatabase, { disconnectMongo } from './util/mongodb';
 import { assertAuthConfig } from './util/authConfig';
 import { installMongoLogSink, MongoLogSink } from './services/diagnostics/mongoLogSink';
+import { startRunSweeper } from './helpers/diagnostics/runSweeper';
 
 const app = new App().app;
 let diagnosticsSink: MongoLogSink | undefined;
@@ -19,7 +20,8 @@ process.on('unhandledRejection', (reason: any) => {
   logger.error(`Unhandled promise rejection: ${reason?.message || reason}`, reason);
 });
 // Unlike unhandledRejection above, an uncaught synchronous exception means the process is in an
-// unknown state — continuing risks corrupted in-memory state, not just one failed request.
+// unknown state — continuing risks corrupted in-memory state, not just one failed request. So the
+// process exits (Node's own guidance) and Kubernetes restarts the pod.
 process.on('uncaughtException', (error: Error) => {
   logger.error(`Uncaught exception: ${error.message}`, error);
   // MongoLogSink.push() only flushes immediately at FLUSH_BATCH_SIZE (500) buffered events —
@@ -85,6 +87,7 @@ const startServer = async () => {
     assertAuthConfig();
     await connectToDatabase();
     diagnosticsSink = installMongoLogSink();
+    startRunSweeper();
     server = app.listen(process.env.PORT || 3000, () => {
       logger.info(`dg-api-gate listening on port ${process.env.PORT || 3000}`);
       logger.info(`dg-content-control url: ${process.env.dgContentControlUrl}`);

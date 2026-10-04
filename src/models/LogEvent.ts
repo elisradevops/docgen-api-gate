@@ -113,6 +113,9 @@ const LogEventSchema = new Schema(
 LogEventSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 // Run-detail timeline: all events for a given run, in order.
 LogEventSchema.index({ runId: 1, ts: 1 });
+// Per-run cap's truncation-marker lookup ({runId, signature}) — without it Mongo fetched every
+// event of the run (up to the 20k cap) to test the signature.
+LogEventSchema.index({ runId: 1, signature: 1 });
 // Top-errors / Issue keying (Phase 6b) and the Logs feed's default newest-first sort.
 LogEventSchema.index({ signature: 1, ts: -1 });
 LogEventSchema.index({ level: 1, ts: -1 });
@@ -125,6 +128,10 @@ LogEventSchema.index({ ts: -1, _id: -1 });
 // is sparse (only new runs after Phase 7b have it), so a docType filter accepts a scan bounded
 // by the time range rather than justifying a fourth index on a high-write collection.
 LogEventSchema.index({ service: 1, ts: -1 });
+// sortBy=service|level sorts on {field, _id} (see eventQueries.ts); without a matching index Mongo
+// sorts the whole window in memory.
+LogEventSchema.index({ service: 1, _id: -1 });
+LogEventSchema.index({ level: 1, _id: -1 });
 LogEventSchema.index({ project: 1, ts: -1 });
 // Free-text search over message for /diagnostics/events. Mongo allows only one text index per
 // collection; $text must be part of the pipeline's leading $match (always true here) and

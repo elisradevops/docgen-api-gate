@@ -238,6 +238,24 @@ describe('DiagnosticsQueryController', () => {
       expect(mockListEvents).toHaveBeenCalledWith(expect.objectContaining({ includeCount: false }));
     });
 
+    test('narrows the window to 7 days for a service/level sort and says so in the response', async () => {
+      mockListEvents.mockResolvedValue({ events: [] });
+      const res: any = buildRes();
+      await controller.listEvents({ query: { sortBy: 'service' } } as any, res);
+      const filters = mockListEvents.mock.calls[0][0].filters;
+      const days = (Date.now() - filters.since.getTime()) / (24 * 60 * 60 * 1000);
+      expect(days).toBeGreaterThan(6.99);
+      expect(days).toBeLessThan(7.01);
+      expect(res.body.windowCapped).toBe(true);
+    });
+
+    test('does not narrow the window for the default ts sort', async () => {
+      mockListEvents.mockResolvedValue({ events: [] });
+      const res: any = buildRes();
+      await controller.listEvents({ query: {} } as any, res);
+      expect(res.body.windowCapped).toBeUndefined();
+    });
+
     test('clamps a since older than the retention window forward to the oldest retained instant', async () => {
       mockListEvents.mockResolvedValue({ events: [] });
 

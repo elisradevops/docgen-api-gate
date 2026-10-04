@@ -1,6 +1,6 @@
 import * as winston from 'winston';
 import Transport from 'winston-transport';
-import { redact, DiagnosticsTransport } from '../../util/logger';
+import { redact, DiagnosticsTransport, isSensitiveKey, skipUncaptured } from '../../util/logger';
 import { installLogSink, LogSink, DiagnosticEvent } from '../../util/logSink';
 import { runContextStore } from '../../util/runContext';
 
@@ -277,5 +277,34 @@ describe('DiagnosticsTransport capture policy (Phase 6b)', () => {
     });
     expect(events).toHaveLength(1);
     expect(events[0].message).toBe('verbose debug');
+  });
+});
+
+describe('isSensitiveKey', () => {
+  it.each(['token', 'accessToken', 'x-docgen-ingest-token', 'PAT', 'password', 'Authorization', 'minioSecretKey', 'apiKey'])(
+    'redacts %s',
+    (key) => expect(isSensitiveKey(key)).toBe(true)
+  );
+  it.each(['areaPath', 'IterationPath', 'path', 'patch', 'dispatch', 'tokenCount'])('keeps %s', (key) =>
+    expect(isSensitiveKey(key)).toBe(false)
+  );
+  it('redact() leaves areaPath visible but scrubs a token', () => {
+    const out = applyRedact({ message: 'm', areaPath: 'P', accessToken: 'abc' });
+    expect(out.areaPath).toBe('P');
+    expect(out.accessToken).toBe('[REDACTED]');
+  });
+});
+
+describe('skipUncaptured', () => {
+  const run = (level: string) => (skipUncaptured() as any).transform({ level, message: 'm' });
+  it('keeps warn/error/info and drops debug in normal mode', () => {
+    expect(run('error')).toBeTruthy();
+    expect(run('info')).toBeTruthy();
+    expect(run('debug')).toBe(false);
+  });
+  it('keeps debug inside a verbose run', () => {
+    runContextStore.run({ runId: 'r1', captureMode: 'verbose' } as any, () => {
+      expect(run('debug')).toBeTruthy();
+    });
   });
 });

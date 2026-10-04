@@ -11,18 +11,19 @@ jest.mock('../../models/LogEvent', () => ({
 // model call that would otherwise hang the test.
 jest.mock('../../helpers/diagnostics/issueUpsert', () => ({
   __esModule: true,
-  upsertIssueForEvent: jest.fn().mockResolvedValue(undefined),
+  upsertIssuesForEvents: jest.fn().mockResolvedValue(undefined),
 }));
 
 import App from '../../app';
 import mongoose from 'mongoose';
 import { withLocalAgent } from '../utils/localSupertest';
 import { LogEvent } from '../../models/LogEvent';
-import { upsertIssueForEvent } from '../../helpers/diagnostics/issueUpsert';
+import { upsertIssuesForEvents } from '../../helpers/diagnostics/issueUpsert';
+import { getIngestSink } from '../../services/diagnostics/mongoLogSink';
 
 const mockInsertMany = LogEvent.insertMany as jest.Mock;
 const mockCountDocuments = LogEvent.countDocuments as jest.Mock;
-const mockUpsertIssueForEvent = upsertIssueForEvent as jest.Mock;
+const mockUpsertIssuesForEvents = upsertIssuesForEvents as jest.Mock;
 
 describe('POST /diagnostics/logs', () => {
   const ORIGINAL_TOKEN = process.env.DIAGNOSTICS_INGEST_TOKEN;
@@ -80,8 +81,9 @@ describe('POST /diagnostics/logs', () => {
             { level: 'bogus-level', service: 'dg-content-control', message: 'this one is malformed' },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     expect(res.body).toEqual({ accepted: 1, rejected: 1 });
     expect(mockInsertMany).toHaveBeenCalledTimes(1);
   });
@@ -124,8 +126,9 @@ describe('POST /diagnostics/logs', () => {
             },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs[0].err.code).toBe('ECONN');
     expect(docs[0].minioSecretKey).toBeUndefined();
@@ -156,8 +159,9 @@ describe('POST /diagnostics/logs', () => {
             },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs[0].context).toEqual({
       method: 'GET',
@@ -183,8 +187,9 @@ describe('POST /diagnostics/logs', () => {
             { level: 'error', service: 's', message: 'm3' },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs).toHaveLength(3);
     expect(docs.every((d: any) => d.context === undefined)).toBe(true);
@@ -202,8 +207,9 @@ describe('POST /diagnostics/logs', () => {
             { level: 'info', service: 'dg-content-control', message: 'an info line', runId: 'run-1' },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     expect(res.body).toEqual({ accepted: 2, rejected: 0 });
   });
 
@@ -224,8 +230,9 @@ describe('POST /diagnostics/logs', () => {
             },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs[0].retainPending).toBe(true);
   });
@@ -237,8 +244,9 @@ describe('POST /diagnostics/logs', () => {
         .post('/diagnostics/logs')
         .set('x-docgen-ingest-token', 'the-secret')
         .send({ events: [{ level: 'error', service: 'dg-content-control', message: 'boom', retainPending: true }] })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     const [docs] = mockInsertMany.mock.calls[0];
     // retainPending only ever means something on debug/info under retain-on-failure — the
     // controller only echoes the sender's flag through, it never invents it for warn/error,
@@ -257,8 +265,9 @@ describe('POST /diagnostics/logs', () => {
         .send({
           events: [{ level: 'debug', service: 'dg-content-control', message: 'one more debug line', runId: 'run-1' }],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     const [docs] = mockInsertMany.mock.calls[0];
     expect(docs).toHaveLength(1);
     expect(docs[0].level).toBe('warn');
@@ -274,8 +283,9 @@ describe('POST /diagnostics/logs', () => {
         .post('/diagnostics/logs')
         .set('x-docgen-ingest-token', 'the-secret')
         .send({ events: [{ level: 'error', service: 'dg-content-control', message: 'boom', runId: 'run-1' }] })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     // No debug/info in the batch, so countDocuments is never even called.
     expect(mockCountDocuments).not.toHaveBeenCalled();
     const [docs] = mockInsertMany.mock.calls[0];
@@ -293,8 +303,9 @@ describe('POST /diagnostics/logs', () => {
         .send({
           events: [{ level: 'debug', service: 'dg-content-control', message: 'yet another debug line', runId: 'run-1' }],
         })
-        .expect(200)
+        .expect(202)
     );
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
     // Everything in the batch was truncated and no marker was needed (one already exists),
     // so there's nothing left to insert at all.
     expect(mockInsertMany).not.toHaveBeenCalled();
@@ -312,9 +323,39 @@ describe('POST /diagnostics/logs', () => {
             { level: 'info', service: 'dg-content-control', message: 'fyi', runId: 'run-1' },
           ],
         })
-        .expect(200)
+        .expect(202)
     );
-    expect(mockUpsertIssueForEvent).toHaveBeenCalledTimes(1);
-    expect(mockUpsertIssueForEvent).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
+    await getIngestSink().flush(); // ingest replies once enqueued; persistence is the sink's batched flush
+    expect(mockUpsertIssuesForEvents).toHaveBeenCalledTimes(1);
+    const [events] = mockUpsertIssuesForEvents.mock.calls[0];
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ level: 'error' });
+  });
+
+  test('replies 202 even when persistence later fails — the sink swallows it, ingest never waits on Mongo', async () => {
+    mockInsertMany.mockRejectedValueOnce(new Error('mongo is slow'));
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const app = createApp();
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({ events: [{ level: 'error', service: 'dg-content-control', message: 'boom' }] })
+        .expect(202)
+    );
+    await expect(getIngestSink().flush()).resolves.toBeUndefined();
+    errSpy.mockRestore();
+  });
+
+  test('rejects an oversized body with 413 on this route only (2MB limit, not the global 50MB)', async () => {
+    const app = createApp();
+    const big = 'x'.repeat(3 * 1024 * 1024);
+    await withLocalAgent(app, (agent) =>
+      agent
+        .post('/diagnostics/logs')
+        .set('x-docgen-ingest-token', 'the-secret')
+        .send({ events: [{ level: 'error', service: 's', message: big }] })
+        .expect(413)
+    );
   });
 });
