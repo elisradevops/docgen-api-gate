@@ -64,9 +64,44 @@ describe('resolveRunId', () => {
   });
 });
 
+describe('attachRunContext request ids', () => {
+  const fakeReq = (headers: Record<string, string>, path: string) =>
+    ({ header: (name: string) => headers[name.toLowerCase()], path } as any);
+  const fakeRes = () => ({ setHeader: () => undefined } as any);
+  const runIdFor = (headers: Record<string, string>, path: string): string => {
+    let id = '';
+    attachRunContext(fakeReq(headers, path), fakeRes(), () => {
+      id = runContextStore.getStore()!.runId;
+    });
+    return id;
+  };
+
+  test('a non-generation request without an id is minted as req-<uuid>', () => {
+    expect(runIdFor({}, '/azure/tests/plans')).toMatch(/^req-[0-9a-f-]{36}$/);
+  });
+
+  test('a generation request without an id (a pipeline caller) keeps a plain uuid run id', () => {
+    expect(runIdFor({}, '/jsonDocument/create')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(runIdFor({}, '/jsonDocument/create/')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(runIdFor({}, '/JSONDOCUMENT/create')).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  test('a valid client-supplied id is never re-prefixed, on any path', () => {
+    expect(runIdFor({ 'x-docgen-run-id': 'abc-123' }, '/azure/projects')).toBe('abc-123');
+  });
+
+  test('a malformed supplied id on a non-generation path is replaced by a req- id', () => {
+    expect(runIdFor({ 'x-docgen-run-id': 'bad id!' }, '/azure/projects')).toMatch(/^req-/);
+  });
+
+  test('the prefixed id still satisfies the run id pattern', () => {
+    expect(runIdFor({}, '/azure/projects')).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  });
+});
+
 describe('attachRunContext middleware', () => {
-  const fakeReq = (headers: Record<string, string>) =>
-    ({ header: (name: string) => headers[name.toLowerCase()] } as any);
+  const fakeReq = (headers: Record<string, string>, path?: string) =>
+    ({ header: (name: string) => headers[name.toLowerCase()], path } as any);
   const fakeRes = () => {
     const headers: Record<string, string> = {};
     return { setHeader: (name: string, value: string) => (headers[name] = value), headers } as any;

@@ -56,10 +56,24 @@ function resolveCaptureMode(headerValue: string | string[] | undefined): 'verbos
 // plus an unbounded field. An absent or malformed value is replaced with a freshly
 // minted id rather than passed through — this is also what "prefer the frontend-supplied
 // documentId when present and valid" means once the frontend sends it as this header.
-export function resolveRunId(headerValue: string | string[] | undefined): string {
+export function resolveRunId(headerValue: string | string[] | undefined, mintPrefix = ''): string {
   const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
   if (raw && RUN_ID_PATTERN.test(raw)) return raw;
-  return randomUUID();
+  return `${mintPrefix}${randomUUID()}`;
+}
+
+// Only document generation has a DocumentRun. Every other request (the pickers' test-plan /
+// query / project lookups, dashboard polling, ...) still needs a correlation id for its log
+// lines, but presenting a bare uuid as a "run" sent people hunting for a run that never
+// existed. Those ids are minted with this prefix, so they read as what they are — and still
+// fit RUN_ID_PATTERN (<= 64 chars: 4 + 36). A client-supplied valid id is never re-prefixed.
+export const REQUEST_ID_PREFIX = 'req-';
+const GENERATION_PATH = '/jsondocument/create';
+function isGenerationRequest(req: Request): boolean {
+  const path = typeof req.path === 'string' ? req.path.replace(/\/+$/, '').toLowerCase() : undefined;
+  // An unknown path (nothing to judge by) is treated as generation: the safe default keeps
+  // plain run ids rather than mislabelling a real run as a request.
+  return path === undefined || path === GENERATION_PATH;
 }
 
 // First middleware in the chain (see app.ts) so the whole request lifecycle — including
@@ -69,7 +83,7 @@ export function resolveRunId(headerValue: string | string[] | undefined): string
 export function attachRunContext(req: Request, res: Response, next: NextFunction): void {
   const rawHeader = req.header('x-docgen-run-id');
   const wasClientSupplied = typeof rawHeader === 'string' && RUN_ID_PATTERN.test(rawHeader);
-  const runId = resolveRunId(rawHeader);
+  const runId = resolveRunId(rawHeader, isGenerationRequest(req) ? '' : REQUEST_ID_PREFIX);
   const requestedCaptureMode = resolveCaptureMode(req.header('x-docgen-capture-mode'));
   // Echoed back so a pipeline caller that didn't send one can pick up the minted id (Phase 5).
   res.setHeader('x-docgen-run-id', runId);

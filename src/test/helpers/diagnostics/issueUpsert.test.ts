@@ -156,6 +156,22 @@ describe('upsertIssuesForEvents (grouped)', () => {
     expect(update.$addToSet).toEqual({ projects: { $each: ['P1', 'P2'] }, docTypes: { $each: ['SVD'] } });
   });
 
+  test('request ids (req-…) are not recorded as occurrences; real run ids still are', async () => {
+    await upsertIssuesForEvents([
+      ev({ runId: 'req-3f2504e0-4f89-11d3-9a0c-0305e82c3301' }),
+      ev({ runId: 'run-real' }),
+    ]);
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$inc.count).toBe(2);
+    expect(update.$push.occurrenceRunIds.$each).toEqual(['run-real']);
+  });
+
+  test('a group made only of request-id events has no $push at all', async () => {
+    await upsertIssuesForEvents([ev({ runId: 'req-abc' })]);
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$push).toBeUndefined();
+  });
+
   test('bounds concurrency: never more than 10 upserts in flight', async () => {
     let inFlight = 0;
     let peak = 0;
