@@ -17,6 +17,11 @@ export interface RunContext {
   // Client-settable (x-docgen-capture-mode), so same trust-boundary treatment as runId: only
   // the two named values survive attachRunContext's validation, anything else is dropped.
   captureMode?: 'verbose' | 'retain-on-failure';
+  // What the client asked for via x-docgen-capture-mode. NOT acted on: the header is
+  // unauthenticated, so attachRunContext only records the request. captureMode above is set
+  // later, by authorizeCaptureMode (helpers/diagnostics/captureAuthorization.ts), once the
+  // request's ADO credentials have been verified.
+  requestedCaptureMode?: 'verbose' | 'retain-on-failure';
   // Phase 7b — set by DocumentsGeneratorController.createRunRecord *after* attachRunContext has
   // already started the store's run() call, since docType and project are only knowable once
   // the request body (not just headers) has been parsed. runContextStore.run(obj, next) stores
@@ -51,10 +56,24 @@ function resolveCaptureMode(headerValue: string | string[] | undefined): 'verbos
 // plus an unbounded field. An absent or malformed value is replaced with a freshly
 // minted id rather than passed through — this is also what "prefer the frontend-supplied
 // documentId when present and valid" means once the frontend sends it as this header.
-export function resolveRunId(headerValue: string | string[] | undefined): string {
+export function resolveRunId(headerValue: string | string[] | undefined, mintPrefix = ''): string {
   const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
   if (raw && RUN_ID_PATTERN.test(raw)) return raw;
-  return randomUUID();
+  return `${mintPrefix}${randomUUID()}`;
+}
+
+// Only document generation has a DocumentRun. Every other request (the pickers' test-plan /
+// query / project lookups, dashboard polling, ...) still needs a correlation id for its log
+// lines, but presenting a bare uuid as a "run" sent people hunting for a run that never
+// existed. Those ids are minted with this prefix, so they read as what they are — and still
+// fit RUN_ID_PATTERN (<= 64 chars: 4 + 36). A client-supplied valid id is never re-prefixed.
+export const REQUEST_ID_PREFIX = 'req-';
+const GENERATION_PATH = '/jsondocument/create';
+function isGenerationRequest(req: Request): boolean {
+  const path = typeof req.path === 'string' ? req.path.replace(/\/+$/, '').toLowerCase() : undefined;
+  // An unknown path (nothing to judge by) is treated as generation: the safe default keeps
+  // plain run ids rather than mislabelling a real run as a request.
+  return path === undefined || path === GENERATION_PATH;
 }
 
 // First middleware in the chain (see app.ts) so the whole request lifecycle — including
@@ -64,15 +83,41 @@ export function resolveRunId(headerValue: string | string[] | undefined): string
 export function attachRunContext(req: Request, res: Response, next: NextFunction): void {
   const rawHeader = req.header('x-docgen-run-id');
   const wasClientSupplied = typeof rawHeader === 'string' && RUN_ID_PATTERN.test(rawHeader);
-  const runId = resolveRunId(rawHeader);
-  const captureMode = resolveCaptureMode(req.header('x-docgen-capture-mode'));
+  const runId = resolveRunId(rawHeader, isGenerationRequest(req) ? '' : REQUEST_ID_PREFIX);
+  const requestedCaptureMode = resolveCaptureMode(req.header('x-docgen-capture-mode'));
   // Echoed back so a pipeline caller that didn't send one can pick up the minted id (Phase 5).
   res.setHeader('x-docgen-run-id', runId);
-  runContextStore.run({ runId, trigger: wasClientSupplied ? 'ui' : 'pipeline', captureMode }, next);
+  runContextStore.run({ runId, trigger: wasClientSupplied ? 'ui' : 'pipeline', requestedCaptureMode }, next);
 }
 
-// Forwards the ambient runId as an outbound header on every request made through the given
-// axios instance, so content-control/json-to-word see the same id api-gate is logging
+// The correlation headers are for DocGen's own services. The default axios instance is also used
+// for SharePoint/Graph and presigned-URL calls, which must not receive a run id, project name or
+// doc type — so headers are added only when the request targets content-control or json-to-word
+// (origins read at call time, like the rest of this repo's config).
+function internalOrigins(): Set<string> {
+  const origins = new Set<string>();
+  for (const raw of [process.env.dgContentControlUrl, process.env.jsonToWordPostUrl]) {
+    if (!raw) continue;
+    try {
+      origins.add(new URL(raw).origin);
+    } catch {
+      // an unparsable configured URL simply contributes no allowed origin
+    }
+  }
+  return origins;
+}
+
+function isInternalTarget(config: { url?: string; baseURL?: string }): boolean {
+  try {
+    const target = new URL(config.url ?? '', config.baseURL);
+    return internalOrigins().has(target.origin);
+  } catch {
+    return false;
+  }
+}
+
+// Forwards the ambient runId as an outbound header on every request to an internal DocGen service
+// made through the given axios instance, so content-control/json-to-word see the same id api-gate is logging
 // under. A no-op outside a run (e.g. a call made at module load, before any request).
 // `axios.create()` instances (DataProviderController's ccClient) don't share the default
 // instance's interceptors, so each one needs this called on it explicitly; the plain
@@ -81,7 +126,7 @@ export function attachRunContext(req: Request, res: Response, next: NextFunction
 export function installRunIdForwarding(instance: AxiosInstance): void {
   instance.interceptors.request.use((config) => {
     const store = runContextStore.getStore();
-    if (store?.runId) {
+    if (store?.runId && isInternalTarget(config)) {
       config.headers = config.headers ?? {};
       (config.headers as Record<string, string>)['x-docgen-run-id'] = store.runId;
       // Phase 6b — content-control's own attachRunContext reads this the same way it reads

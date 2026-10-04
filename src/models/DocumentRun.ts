@@ -52,6 +52,8 @@ export interface IDocumentRun extends Document {
   userId?: string;
   project?: string;
   docType?: string;
+  // Set only when verbose capture was actually active (requested AND authorized) for this run.
+  captureMode?: 'verbose' | 'retain-on-failure';
   templateName?: string;
   documentUrl?: string;
   errorChain: IDocumentRunErrorChainEntry[];
@@ -126,6 +128,7 @@ const DocumentRunSchema = new Schema(
     userId: { type: String },
     project: { type: String },
     docType: { type: String },
+    captureMode: { type: String, enum: ['verbose', 'retain-on-failure'] },
     templateName: { type: String },
     documentUrl: { type: String },
     errorChain: { type: [ErrorChainEntrySchema], default: [] },
