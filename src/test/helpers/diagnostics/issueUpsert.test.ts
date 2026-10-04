@@ -8,7 +8,7 @@ jest.mock('../../../models/Issue', () => ({
 }));
 
 import { Issue } from '../../../models/Issue';
-import { upsertIssueForEvent } from '../../../helpers/diagnostics/issueUpsert';
+import { upsertIssueForEvent, upsertIssuesForEvents } from '../../../helpers/diagnostics/issueUpsert';
 
 const mockFindOneAndUpdate = Issue.findOneAndUpdate as jest.Mock;
 const mockUpdateOne = Issue.updateOne as jest.Mock;
@@ -52,7 +52,7 @@ describe('upsertIssueForEvent', () => {
       environmentAtFirstSeen: { service: 'dg-api-gate', version: '1.0.0' },
     });
     expect(update.$inc).toEqual({ count: 1 });
-    expect(update.$addToSet).toEqual({ projects: 'elisradevops-project' });
+    expect(update.$addToSet).toEqual({ projects: { $each: ['elisradevops-project'] } });
     expect(update.$push.occurrenceRunIds.$each).toEqual(['run-1']);
     expect(opts).toMatchObject({ upsert: true, new: false });
     // A genuine insert (before === null) never needs the regression flip.
@@ -102,13 +102,72 @@ describe('upsertIssueForEvent', () => {
       docType: 'SVD',
     });
     const [, update] = mockFindOneAndUpdate.mock.calls[0];
-    expect(update.$addToSet).toEqual({ projects: 'Cube-ADCS', docTypes: 'SVD' });
+    expect(update.$addToSet).toEqual({ projects: { $each: ['Cube-ADCS'] }, docTypes: { $each: ['SVD'] } });
   });
 
   test('adds only docType to $addToSet when project is absent', async () => {
     mockFindOneAndUpdate.mockResolvedValue(null);
     await upsertIssueForEvent({ signature: 's', message: 'm', service: 'svc', level: 'error', version: '1.0.0', docType: 'SVD' });
     const [, update] = mockFindOneAndUpdate.mock.calls[0];
-    expect(update.$addToSet).toEqual({ docTypes: 'SVD' });
+    expect(update.$addToSet).toEqual({ docTypes: { $each: ['SVD'] } });
+  });
+});
+
+describe('upsertIssuesForEvents (grouped)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFindOneAndUpdate.mockResolvedValue(null);
+  });
+  const ev = (over: Record<string, unknown> = {}) => ({
+    signature: 'sig-a',
+    message: 'm',
+    service: 'svc',
+    level: 'error',
+    version: '1.0.0',
+    ...over,
+  });
+
+  test('a burst of identical errors is one update with $inc of the group size', async () => {
+    await upsertIssuesForEvents(Array.from({ length: 500 }, () => ev({ runId: 'run-1', project: 'P' })));
+    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(1);
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$inc).toEqual({ count: 500 });
+    expect(update.$push.occurrenceRunIds.$each).toEqual(['run-1']); // deduplicated
+    expect(update.$addToSet.projects.$each).toEqual(['P']);
+  });
+
+  test('distinct signatures and distinct services each get their own update', async () => {
+    await upsertIssuesForEvents([ev(), ev({ signature: 'sig-b' }), ev({ service: 'other' }), ev()]);
+    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(3);
+    const counts = mockFindOneAndUpdate.mock.calls.map(([f, u]) => [f.signature, f.service, u.$inc.count]);
+    expect(counts).toEqual(expect.arrayContaining([['sig-a', 'svc', 2], ['sig-b', 'svc', 1], ['sig-a', 'other', 1]]));
+  });
+
+  test('ignores non-error events and merges runIds/projects across a group', async () => {
+    await upsertIssuesForEvents([
+      ev({ runId: 'r1', project: 'P1' }),
+      ev({ runId: 'r2', project: 'P2', docType: 'SVD' }),
+      ev({ level: 'warn', runId: 'r3' }),
+    ]);
+    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(1);
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$inc.count).toBe(2);
+    expect(update.$push.occurrenceRunIds.$each).toEqual(['r1', 'r2']);
+    expect(update.$addToSet).toEqual({ projects: { $each: ['P1', 'P2'] }, docTypes: { $each: ['SVD'] } });
+  });
+
+  test('bounds concurrency: never more than 10 upserts in flight', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    mockFindOneAndUpdate.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setImmediate(r));
+      inFlight--;
+      return null;
+    });
+    await upsertIssuesForEvents(Array.from({ length: 35 }, (_, i) => ev({ signature: `sig-${i}` })));
+    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(35);
+    expect(peak).toBeLessThanOrEqual(10);
   });
 });

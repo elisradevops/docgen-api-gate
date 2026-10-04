@@ -25,7 +25,24 @@ export const withRunContext = winston.format((info) => {
 // "accesskey" (not just "minioaccesskey") so this also catches AwsAccessKeyId — a real gap
 // found during the Phase 5 manifest work: only AwsSecretAccessKey was covered before, via
 // "secret", while its access-key-id sibling passed through unredacted.
-const SENSITIVE_KEY = /token|pat|password|secret|authorization|accesskey|minioaccesskey|miniosecretkey/i;
+// Word-based, not substring: the key is split into lower-case words (camelCase, kebab-case and
+// snake_case alike) and judged by how it *ends*. A substring test matched "pat" inside
+// "areaPath" / "path" / "patch" and blanked ordinary ADO fields; this keeps `accessToken`,
+// `x-docgen-ingest-token`, `minioSecretKey`, `PAT`, `password` redacted while `areaPath` stays.
+const SENSITIVE_TAILS = ["token", "password", "secret", "authorization", "accesskey", "secretkey", "apikey"];
+const SENSITIVE_LAST_WORDS = new Set(["pat", "pwd", "cookie", "tokens", "passwords", "secrets"]);
+export function isSensitiveKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (words.length === 0) return false;
+  if (SENSITIVE_LAST_WORDS.has(words[words.length - 1])) return true;
+  const tail = words.slice(-2).join("");
+  return SENSITIVE_TAILS.some((t) => tail.endsWith(t));
+}
 
 // A per-key try/catch on the *read*, not just around the whole loop: a getter that throws
 // (e.g. `{ get boom() { throw ... } }`) would otherwise abort redaction for every remaining
@@ -54,7 +71,7 @@ export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object
       out[key] = "[Unreadable property]";
       continue;
     }
-    out[key] = SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactValue(read.value, depth + 1, seen);
+    out[key] = isSensitiveKey(key) ? "[REDACTED]" : redactValue(read.value, depth + 1, seen);
   }
   return out;
 }
@@ -73,7 +90,7 @@ export const redact = winston.format((info) => {
       ? "[Unreadable property]"
       : // A top-level primitive (e.g. token: "abc") has no children for redactValue to walk into —
         // the key itself has to be checked here too, not just inside the recursive object walk.
-        SENSITIVE_KEY.test(key)
+        isSensitiveKey(key)
         ? "[REDACTED]"
         : redactValue(read.value);
     try {
@@ -207,11 +224,29 @@ const useJson = (process.env.LOG_FORMAT || "text").toLowerCase() === "json";
 // for free; info/warn/error volume (Phase 4's focus) is unaffected either way.
 const CONSOLE_LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
+// Drops a record before the (comparatively expensive) redact/splat/format work when nothing
+// would consume it: stdout wouldn"t print it, and DiagnosticsTransport wouldn"t persist it
+// (only debug/info under a verbose/retain-on-failure run are captured below warn). The logger"s
+// own level gate must stay "debug" for that capture, so this is the cheap early exit instead.
+const LEVEL_RANK: Record<string, number> = { error: 0, warn: 1, info: 2, http: 3, verbose: 4, debug: 5, silly: 6 };
+export const skipUncaptured = winston.format((info) => {
+  const printRank = LEVEL_RANK[CONSOLE_LOG_LEVEL];
+  const rank = LEVEL_RANK[String(info.level)];
+  if (printRank === undefined || rank === undefined || rank <= printRank) return info;
+  const mode = runContextStore.getStore()?.captureMode;
+  const captured =
+    DIAGNOSTICS_CAPTURE_ENABLED &&
+    (info.level === "debug" || info.level === "info") &&
+    (mode === "verbose" || mode === "retain-on-failure");
+  return captured ? info : false;
+});
+
 const logger: winston.Logger = winston.createLogger({
   level: "debug",
   defaultMeta: { service: "dg-api-gate", version: readOwnVersion() },
   format: useJson
     ? winston.format.combine(
+        skipUncaptured(),
         winston.format.errors({ stack: true }),
         winston.format.timestamp(),
         withRunContext(),
@@ -220,6 +255,7 @@ const logger: winston.Logger = winston.createLogger({
         winston.format.json()
       )
     : winston.format.combine(
+        skipUncaptured(),
         winston.format.errors({ stack: true }),
         winston.format.timestamp(),
         withRunContext(),

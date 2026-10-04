@@ -3,15 +3,17 @@ import { Issue } from '../models/Issue';
 
 export class IssueController {
   // POST /diagnostics/issues/:issueId/resolve — the only mutation this model has (no
-  // ignore/mute/assign — see models/Issue.ts). Guarded requireSession+requireCsrf at the
-  // route (the /auth/logout precedent, the only existing pair for "must always have an
-  // acting user"), so req.spSession is always populated by the time this runs.
+  // ignore/mute/assign — see models/Issue.ts). Guarded by requireMongo only (the ADO-PAT login
+  // path never establishes a session to require). The acting user is whatever the X-User-Id
+  // header says — the same unauthenticated identity hint the SharePoint routes use — so
+  // resolvedBy is attribution for the audit trail, not an authorization decision.
   public async resolve(req: Request, res: Response): Promise<void> {
     const { issueId } = req.params;
-    const homeAccountId = (req as any).spSession?.homeAccountId;
+    const header = req.headers['x-user-id'];
+    const resolvedBy = typeof header === 'string' && header.trim() ? header.trim().slice(0, 200) : undefined;
     const issue = await Issue.findByIdAndUpdate(
       issueId,
-      { $set: { status: 'resolved', resolvedAt: new Date(), resolvedBy: homeAccountId } },
+      { $set: { status: 'resolved', resolvedAt: new Date(), resolvedBy } },
       { new: true }
     );
     if (!issue) {

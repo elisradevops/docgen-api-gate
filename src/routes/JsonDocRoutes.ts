@@ -479,7 +479,7 @@ export class Routes {
     // /dataBase/getFavorites (the only other read-only Mongo GET in this repo): no GET here is
     // session-guarded except /auth/session, and gating the dashboard on SharePoint SSO — a
     // flow the ADO-PAT generation path never requires — would make it invisible in normal use.
-    // Only the resolve mutation above needs an acting identity, hence keeps requireSession.
+    // The resolve mutation above records an acting identity from X-User-Id (attribution only).
     app.route('/diagnostics/overview').get(requireMongo, (req: Request, res: Response) => {
       this.diagnosticsQueryController.getOverview(req, res).catch((err) => {
         res.status(500).json({ message: `Failed to load diagnostics overview: ${err}`, error: err });

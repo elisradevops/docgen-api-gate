@@ -18,7 +18,8 @@ jest.mock('../../util/logger', () => ({
 
 jest.mock('../../models/LogEvent', () => ({
   __esModule: true,
-  LogEvent: { deleteMany: jest.fn().mockResolvedValue(undefined) },
+  LogEvent: { deleteMany: jest.fn().mockResolvedValue(undefined), updateMany: jest.fn().mockResolvedValue(undefined) },
+  LOG_EVENT_RETENTION_MS: 30 * 24 * 60 * 60 * 1000,
 }));
 
 jest.mock('../../models/DocumentRun', () => ({
@@ -566,6 +567,7 @@ describe('DocumentsGeneratorController — Phase 6b retain-on-failure prune', ()
   const axios = require('axios');
   const { LogEvent } = require('../../models/LogEvent');
   const mockDeleteMany = LogEvent.deleteMany as jest.Mock;
+  const mockUpdateMany = LogEvent.updateMany as jest.Mock;
   let controller: DocumentsGeneratorController;
   let prevReadyState: number;
 
@@ -596,7 +598,7 @@ describe('DocumentsGeneratorController — Phase 6b retain-on-failure prune', ()
     (mongoose.connection as any).readyState = prevReadyState;
   });
 
-  test('deletes retainPending LogEvents for this run when the generation succeeds', async () => {
+  test('gives retainPending LogEvents a short expiry (not an immediate delete) when the generation succeeds', async () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
@@ -604,10 +606,15 @@ describe('DocumentsGeneratorController — Phase 6b retain-on-failure prune', ()
 
     await runContextStore.run({ runId: 'run-success' }, () => controller.createJSONDoc(makeReq(), buildRes()));
 
-    expect(mockDeleteMany).toHaveBeenCalledWith({ runId: 'run-success', retainPending: true });
+    const [filter, update] = mockUpdateMany.mock.calls[0];
+    expect(filter).toEqual({ runId: 'run-success', retainPending: true });
+    const msUntilExpiry = update.$set.expiresAt.getTime() - Date.now();
+    expect(msUntilExpiry).toBeGreaterThan(0);
+    expect(msUntilExpiry).toBeLessThanOrEqual(10 * 60 * 1000);
+    expect(mockDeleteMany).not.toHaveBeenCalled();
   });
 
-  test('does not delete anything when the generation fails', async () => {
+  test('pins retainPending LogEvents to the full retention when the generation fails', async () => {
     axios.post.mockRejectedValueOnce({ response: { data: { message: 'doc-template failed' } } });
 
     await expect(
@@ -615,6 +622,9 @@ describe('DocumentsGeneratorController — Phase 6b retain-on-failure prune', ()
     ).rejects.toBeDefined();
 
     expect(mockDeleteMany).not.toHaveBeenCalled();
+    const [filter, update] = mockUpdateMany.mock.calls[0];
+    expect(filter).toEqual({ runId: 'run-failure', retainPending: true });
+    expect(update.$set.expiresAt.getTime() - Date.now()).toBeGreaterThan(24 * 60 * 60 * 1000);
   });
 });
 

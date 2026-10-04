@@ -36,8 +36,27 @@ export function buildEnvironment(contentControlVersions?: ContentControlVersions
 // naming what's stripped. redactValue is applied only to each content control's free-form
 // `data` blob as a backstop for whatever an individual content-control type happens to put
 // there (per Phase 5's plan wording: "normalized, redacted request tree").
+// A content control's `data` can embed whole tables or documents; the manifest lives in one Mongo
+// document (16MB cap) that is written at run end, so an oversized blob would fail the finalize
+// write and leave the run looking "running". Oversized parts are replaced by a size marker.
+const MAX_CONTROL_DATA_BYTES = 64 * 1024;
+const MAX_INPUTS_BYTES = 256 * 1024;
+
+function jsonBytes(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return Infinity;
+  }
+}
+
+function boundedData(data: unknown, maxBytes: number): unknown {
+  const bytes = jsonBytes(data);
+  return bytes > maxBytes ? { omitted: true, bytes: Number.isFinite(bytes) ? bytes : undefined } : data;
+}
+
 export function buildInputs(documentRequest: DocumentRequest, resolvedContextName?: string) {
-  return {
+  const inputs = {
     templateName: documentRequest.templateFile,
     project: documentRequest.teamProjectName,
     orgUrl: documentRequest.tfsCollectionUri,
@@ -48,9 +67,17 @@ export function buildInputs(documentRequest: DocumentRequest, resolvedContextNam
       type: cc?.type,
       skin: cc?.skin,
       headingLevel: cc?.headingLevel,
-      data: redactValue(cc?.data),
+      data: boundedData(redactValue(cc?.data), MAX_CONTROL_DATA_BYTES),
     })),
   };
+  // Many individually-small controls can still add up; drop their data entirely past the total.
+  if (jsonBytes(inputs) > MAX_INPUTS_BYTES) {
+    inputs.contentControls = inputs.contentControls.map((cc) => ({
+      ...cc,
+      data: { omitted: true, bytes: jsonBytes(cc.data) },
+    }));
+  }
+  return inputs;
 }
 
 export function buildStep(params: {

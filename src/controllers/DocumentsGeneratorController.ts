@@ -11,7 +11,11 @@ import {
   IDocumentRunManifest,
   DOCUMENT_RUN_RETENTION_MS,
 } from '../models/DocumentRun';
-import { LogEvent } from '../models/LogEvent';
+import { LogEvent, LOG_EVENT_RETENTION_MS } from '../models/LogEvent';
+
+// How long a successful run's provisional (retain-on-failure) events linger, so ones still in
+// flight from another process can arrive and be swept by the same expiry.
+const RETAIN_PENDING_GRACE_MS = 10 * 60 * 1000;
 import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
 import { resolveDocType } from '../helpers/runDocType';
 
@@ -158,7 +162,7 @@ export class DocumentsGeneratorController {
             documentUrl: finalDocumentUrl,
             manifest,
           });
-          await this.pruneRetainOnFailureEvents(runContext);
+          await this.expireRetainOnFailureEvents(runContext);
           return resolve(documentUrl.data);
         } catch (err: any) {
           if (err.response) {
@@ -185,6 +189,7 @@ export class DocumentsGeneratorController {
           errorChain: this.buildErrorChain(err),
           manifest,
         });
+        await this.keepRetainOnFailureEvents(runContext);
         if (err?.statusCode) {
           return reject(err);
         }
@@ -272,14 +277,31 @@ export class DocumentsGeneratorController {
   // events captured under that mode are persisted immediately (like verbose), tagged
   // retainPending, from every process (content-control and the two packages that run
   // in-process inside it — see their own DiagnosticsTransport). This is the one place a run's
-  // success is known, so it's the one place they get deleted; the failure path does nothing,
-  // since the events are already there and should simply stay.
-  private async pruneRetainOnFailureEvents(runContext: RunContext | undefined): Promise<void> {
+  // success is known. Rather than deleting right now, they are given a short expiry: events
+  // still buffered in content-control's HttpLogSink arrive after this point, and a delete would
+  // miss them (they are inserted already expiring in 24h — see sanitizeEvent). On failure the
+  // events are instead pinned to the full retention.
+  private async expireRetainOnFailureEvents(runContext: RunContext | undefined): Promise<void> {
     if (!runContext?.runId || !isMongoConnected()) return;
     try {
-      await LogEvent.deleteMany({ runId: runContext.runId, retainPending: true });
+      await LogEvent.updateMany(
+        { runId: runContext.runId, retainPending: true },
+        { $set: { expiresAt: new Date(Date.now() + RETAIN_PENDING_GRACE_MS) } }
+      );
     } catch (err) {
-      logger.warn('Failed to prune retain-on-failure LogEvents', err);
+      logger.warn('Failed to expire retain-on-failure LogEvents', err);
+    }
+  }
+
+  private async keepRetainOnFailureEvents(runContext: RunContext | undefined): Promise<void> {
+    if (!runContext?.runId || !isMongoConnected()) return;
+    try {
+      await LogEvent.updateMany(
+        { runId: runContext.runId, retainPending: true },
+        { $set: { expiresAt: new Date(Date.now() + LOG_EVENT_RETENTION_MS) } }
+      );
+    } catch (err) {
+      logger.warn('Failed to pin retain-on-failure LogEvents', err);
     }
   }
 

@@ -62,6 +62,10 @@ function parseEventFilters(req: Request): EventFilters {
   };
 }
 
+// A sort by service/level can't ride the {ts, _id} index, so its scan is bounded by narrowing
+// the window instead; the response says so (windowCapped) rather than silently returning less.
+const NON_TS_SORT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 export class DiagnosticsQueryController {
   public async getOverview(req: Request, res: Response): Promise<void> {
     if (!isMongoConnected()) {
@@ -123,15 +127,25 @@ export class DiagnosticsQueryController {
       return;
     }
     try {
+      const sortBy = parseSortField(req.query.sortBy);
+      const filters = parseEventFilters(req);
+      let windowCapped = false;
+      if (sortBy && sortBy !== 'ts') {
+        const cap = new Date(Date.now() - NON_TS_SORT_WINDOW_MS);
+        if (filters.since && filters.since < cap) {
+          filters.since = cap;
+          windowCapped = true;
+        }
+      }
       const result = await listEvents({
-        filters: parseEventFilters(req),
-        sortBy: parseSortField(req.query.sortBy),
+        filters,
+        sortBy,
         sortDir: parseSortDir(req.query.sortDir),
         cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
         limit: parsePositiveInt(req.query.limit),
         includeCount: req.query.includeCount === 'true',
       });
-      res.status(200).json(result);
+      res.status(200).json(windowCapped ? { ...result, windowCapped: true } : result);
     } catch (err) {
       res.status(500).json({ message: 'Failed to list events', error: String(err) });
     }

@@ -1,5 +1,5 @@
-// Upserts an Issue for one warn/error LogEvent, called from both places that persist
-// LogEvents (MongoLogSink.flush, DiagnosticsController.ingestLogs). Regression semantics
+// Upserts Issues for the error LogEvents of a persisted batch (MongoLogSink's one persist path,
+// shared by api-gate's own events and POST /diagnostics/logs). Regression semantics
 // (Phase 6b plan decision 1) need a read-before-write: a single atomic findOneAndUpdate can
 // create-or-increment, but "flip resolved back to unresolved, but only if it actually was
 // resolved" can't be expressed unconditionally in the same operation without corrupting an
@@ -20,30 +20,82 @@ export interface IssueUpsertEvent {
   docType?: string;
 }
 
+const UPSERT_CONCURRENCY = 10;
+
+interface IssueGroup {
+  signature: string;
+  service: string;
+  message: string;
+  version: string;
+  count: number;
+  projects: Set<string>;
+  docTypes: Set<string>;
+  runIds: string[];
+}
+
+// One upsert per distinct {signature, service} in the batch instead of one per error event: a
+// burst of 500 identical errors is one `$inc: {count: 500}` on one Issue document, not 500
+// concurrent updates contending for it. Groups are processed a few at a time, so a batch with
+// many distinct signatures can't open an unbounded number of simultaneous Mongo operations.
+export async function upsertIssuesForEvents(events: IssueUpsertEvent[]): Promise<void> {
+  const groups = new Map<string, IssueGroup>();
+  for (const event of events) {
+    if (event.level !== 'error') continue;
+    const key = `${event.service}\u0000${event.signature}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        signature: event.signature,
+        service: event.service,
+        message: event.message,
+        version: event.version,
+        count: 0,
+        projects: new Set(),
+        docTypes: new Set(),
+        runIds: [],
+      };
+      groups.set(key, group);
+    }
+    group.count++;
+    if (event.project) group.projects.add(event.project);
+    if (event.docType) group.docTypes.add(event.docType);
+    if (event.runId && !group.runIds.includes(event.runId)) group.runIds.push(event.runId);
+  }
+  const all = [...groups.values()];
+  for (let i = 0; i < all.length; i += UPSERT_CONCURRENCY) {
+    await Promise.all(all.slice(i, i + UPSERT_CONCURRENCY).map(upsertGroup));
+  }
+}
+
 export async function upsertIssueForEvent(event: IssueUpsertEvent): Promise<void> {
-  if (event.level !== 'error') return;
+  await upsertIssuesForEvents([event]);
+}
+
+async function upsertGroup(group: IssueGroup): Promise<void> {
   try {
     const now = new Date();
-    // Both projects[] and docTypes[] are $addToSet — they must be ONE combined spread, not two
+    // projects[] and docTypes[] are both $addToSet — they must be ONE combined object, not two
     // separate `$addToSet` keys: a second bare `{ $addToSet: {...} }` object spread after the
     // first would silently overwrite it rather than merge, since both target the same top-level
-    // update key. Caught during Phase 7b planning before this became a real regression.
-    const addToSet: Record<string, string> = {};
-    if (event.project) addToSet.projects = event.project;
-    if (event.docType) addToSet.docTypes = event.docType;
+    // update key.
+    const addToSet: Record<string, { $each: string[] }> = {};
+    if (group.projects.size) addToSet.projects = { $each: [...group.projects] };
+    if (group.docTypes.size) addToSet.docTypes = { $each: [...group.docTypes] };
     const before = await Issue.findOneAndUpdate(
-      { signature: event.signature, service: event.service },
+      { signature: group.signature, service: group.service },
       {
         $setOnInsert: {
           status: 'unresolved',
           firstSeenAt: now,
-          message: event.message,
-          environmentAtFirstSeen: { service: event.service, version: event.version },
+          message: group.message,
+          environmentAtFirstSeen: { service: group.service, version: group.version },
         },
         $set: { lastSeenAt: now },
-        $inc: { count: 1 },
+        $inc: { count: group.count },
         ...(Object.keys(addToSet).length ? { $addToSet: addToSet } : {}),
-        ...(event.runId ? { $push: { occurrenceRunIds: { $each: [event.runId], $slice: -ISSUE_OCCURRENCE_RUN_IDS_CAP } } } : {}),
+        ...(group.runIds.length
+          ? { $push: { occurrenceRunIds: { $each: group.runIds, $slice: -ISSUE_OCCURRENCE_RUN_IDS_CAP } } }
+          : {}),
       },
       { upsert: true, new: false }
     );

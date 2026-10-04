@@ -88,4 +88,25 @@ describe('runManifest', () => {
   test('emptyManifest starts with no steps or artifacts', () => {
     expect(emptyManifest()).toEqual({ steps: [], artifacts: [] });
   });
+
+  test('buildInputs replaces an oversized content-control data blob with a size marker', () => {
+    const request = {
+      ...baseRequest,
+      contentControls: [
+        { title: 'big', type: 'x', data: { blob: 'x'.repeat(70 * 1024) } },
+        { title: 'small', type: 'x', data: { ok: true } },
+      ],
+    } as any;
+    const inputs = buildInputs(request);
+    expect(inputs.contentControls[0].data).toMatchObject({ omitted: true });
+    expect((inputs.contentControls[0].data as any).bytes).toBeGreaterThan(64 * 1024);
+    expect(inputs.contentControls[1].data).toEqual({ ok: true });
+  });
+
+  test('buildInputs drops all control data when many small ones exceed the total budget', () => {
+    const controls = Array.from({ length: 10 }, (_, i) => ({ title: `c${i}`, type: 'x', data: { blob: 'y'.repeat(40 * 1024) } }));
+    const inputs = buildInputs({ ...baseRequest, contentControls: controls } as any);
+    expect(inputs.contentControls.every((cc) => (cc.data as any).omitted === true)).toBe(true);
+    expect(JSON.stringify(inputs).length).toBeLessThan(256 * 1024);
+  });
 });
