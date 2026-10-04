@@ -4,9 +4,10 @@ import { withLocalAgent } from '../utils/localSupertest';
 
 jest.mock('axios', () => {
   const post = jest.fn();
-  const create = jest.fn(() => ({ post }));
+  const interceptors = { request: { use: jest.fn() } };
+  const create = jest.fn(() => ({ post, interceptors }));
   // Support both default import (axios.create / axios.post) and named exports
-  return { __esModule: true, default: { create, post }, create, post } as any;
+  return { __esModule: true, default: { create, post, interceptors }, create, post, interceptors } as any;
 });
 
 jest.mock('../../util/logger', () => ({
@@ -14,6 +15,8 @@ jest.mock('../../util/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
   error: jest.fn(),
+  readOwnVersion: jest.fn(() => '1.0.0-test'),
+  redactValue: jest.fn((value: unknown) => value),
 }));
 
 const genMock = { generateContentControls: jest.fn() };
@@ -51,14 +54,14 @@ describe('DocumentsGeneratorController HTTP integration', () => {
       // Second call: json-to-word create document
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
 
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const appInstance = new App();
     const app = appInstance.app;
 
     const res = await withLocalAgent(app, (agent) => agent.post('/jsonDocument/create').send(makeBody()).expect(200));
 
-    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' } });
+    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' }, runId: expect.any(String) });
 
     expect(axios.post as jest.Mock).toHaveBeenNthCalledWith(
       1,
@@ -98,34 +101,38 @@ describe('DocumentsGeneratorController HTTP integration', () => {
       'L4 REQ ID',
       'L4 REQ Title',
     ];
-    genMock.generateContentControls.mockResolvedValueOnce([
-      {
-        title: 'mewp-l2-implementation-content-control',
-        isExcelSpreadsheet: true,
-        wordObjects: [
-          {
-            type: 'MewpCoverageReporter',
-            testPlanName: 'MEWP L2 Coverage - Mock Plan',
-            columnOrder: mewpCoverageColumns,
-            rows: [
-              {
-                'L2 REQ ID': 'SR0538',
-                'L2 REQ Title': 'Requirement 0538',
-                'L2 SubSystem': 'ESUK',
-                'L2 Run Status': 'Fail',
-                'Bug ID': 12345,
-                'Bug Title': 'Mock bug',
-                'Bug Responsibility': 'ESUK',
-                'L3 REQ ID': '9001',
-                'L3 REQ Title': 'Mock L3',
-                'L4 REQ ID': '',
-                'L4 REQ Title': '',
-              },
-            ],
-          },
-        ],
-      },
-    ]);
+    genMock.generateContentControls.mockResolvedValueOnce({
+      results: [
+        {
+          title: 'mewp-l2-implementation-content-control',
+          isExcelSpreadsheet: true,
+          wordObjects: [
+            {
+              type: 'MewpCoverageReporter',
+              testPlanName: 'MEWP L2 Coverage - Mock Plan',
+              columnOrder: mewpCoverageColumns,
+              rows: [
+                {
+                  'L2 REQ ID': 'SR0538',
+                  'L2 REQ Title': 'Requirement 0538',
+                  'L2 SubSystem': 'ESUK',
+                  'L2 Run Status': 'Fail',
+                  'Bug ID': 12345,
+                  'Bug Title': 'Mock bug',
+                  'Bug Responsibility': 'ESUK',
+                  'L3 REQ ID': '9001',
+                  'L3 REQ Title': 'Mock L3',
+                  'L4 REQ ID': '',
+                  'L4 REQ Title': '',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      steps: [],
+      artifacts: [],
+    });
 
     let excelCreateCalls = 0;
     (axios.post as jest.Mock).mockImplementation((url: string, payload: any) => {

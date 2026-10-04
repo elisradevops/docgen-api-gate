@@ -1,5 +1,7 @@
 import { DocumentsGeneratorController } from '../../controllers/DocumentsGeneratorController';
 import { buildRes } from '../utils/testResponse';
+import { runContextStore } from '../../util/runContext';
+import mongoose from 'mongoose';
 
 jest.mock('axios', () => ({
   post: jest.fn(),
@@ -10,6 +12,22 @@ jest.mock('../../util/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
   error: jest.fn(),
+  readOwnVersion: jest.fn(() => '1.0.0-test'),
+  redactValue: jest.fn((value: unknown) => value),
+}));
+
+jest.mock('../../models/LogEvent', () => ({
+  __esModule: true,
+  LogEvent: { deleteMany: jest.fn().mockResolvedValue(undefined) },
+}));
+
+jest.mock('../../models/DocumentRun', () => ({
+  __esModule: true,
+  DocumentRun: {
+    create: jest.fn().mockResolvedValue(undefined),
+    updateOne: jest.fn().mockResolvedValue(undefined),
+  },
+  DOCUMENT_RUN_RETENTION_MS: 90 * 24 * 60 * 60 * 1000,
 }));
 
 const genMock = { generateContentControls: jest.fn() };
@@ -59,7 +77,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -78,7 +96,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { templatePath: '' } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq({
       templateFile: '',
@@ -125,7 +143,9 @@ describe('DocumentsGeneratorController', () => {
     const req = makeReq();
     const res = buildRes();
 
-    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('bad template');
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({ message: 'bad template', statusCode: 500 })
+    );
   });
 
   /**
@@ -139,13 +159,15 @@ describe('DocumentsGeneratorController', () => {
     const req = makeReq();
     const res = buildRes();
 
-    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('gen failed');
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({ message: 'gen failed', statusCode: 500 })
+    );
   });
   test('normalizes bucket name and fills default upload properties from env', async () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq({ uploadProperties: { bucketName: 'ATTACH_MENTS ' } });
     const res = buildRes();
@@ -169,7 +191,7 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockResolvedValueOnce({ data: { url: 'http://excel-doc' } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -189,7 +211,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -234,7 +256,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -271,12 +293,14 @@ describe('DocumentsGeneratorController', () => {
     axios.post
       .mockResolvedValueOnce({ data: { template: true } })
       .mockRejectedValueOnce({ response: { data: { message: 'json-to-word failed' } } });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
 
-    await expect(controller.createJSONDoc(req, res)).rejects.toEqual('json-to-word failed');
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({ message: 'json-to-word failed', statusCode: 500 })
+    );
   });
 
   test('json-to-word validation error preserves status/code for upstream 4xx handling', async () => {
@@ -288,7 +312,7 @@ describe('DocumentsGeneratorController', () => {
           data: { message: 'schema invalid', code: 'MEWP_EXTERNAL_FILE_VALIDATION_FAILED' },
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ cc: 1 }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
 
     const req = makeReq();
     const res = buildRes();
@@ -314,7 +338,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -360,7 +384,7 @@ describe('DocumentsGeneratorController', () => {
           ApplicationType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       });
-    genMock.generateContentControls.mockResolvedValueOnce([{ isExcelSpreadsheet: true }]);
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ isExcelSpreadsheet: true }], steps: [], artifacts: [] });
 
     const req = makeReq({
       uploadProperties: {
@@ -535,5 +559,147 @@ describe('DocumentsGeneratorController', () => {
         message: 'External Bugs file validation failed',
       }),
     });
+  });
+});
+
+describe('DocumentsGeneratorController — Phase 6b retain-on-failure prune', () => {
+  const axios = require('axios');
+  const { LogEvent } = require('../../models/LogEvent');
+  const mockDeleteMany = LogEvent.deleteMany as jest.Mock;
+  let controller: DocumentsGeneratorController;
+  let prevReadyState: number;
+
+  function makeReq(overrides: any = {}) {
+    return {
+      body: {
+        tfsCollectionUri: 'https://org',
+        PAT: 'pat',
+        teamProjectName: 'project',
+        templateFile: 'http://template.dotx',
+        formattingSettings: {},
+        uploadProperties: { bucketName: 'ATTACH_MENTS' },
+        ...overrides,
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.dgContentControlUrl = 'http://cc';
+    process.env.jsonToWordPostUrl = 'http://jw';
+    controller = new DocumentsGeneratorController();
+    prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1; // isMongoConnected() reads this directly
+  });
+
+  afterEach(() => {
+    (mongoose.connection as any).readyState = prevReadyState;
+  });
+
+  test('deletes retainPending LogEvents for this run when the generation succeeds', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
+
+    await runContextStore.run({ runId: 'run-success' }, () => controller.createJSONDoc(makeReq(), buildRes()));
+
+    expect(mockDeleteMany).toHaveBeenCalledWith({ runId: 'run-success', retainPending: true });
+  });
+
+  test('does not delete anything when the generation fails', async () => {
+    axios.post.mockRejectedValueOnce({ response: { data: { message: 'doc-template failed' } } });
+
+    await expect(
+      runContextStore.run({ runId: 'run-failure' }, () => controller.createJSONDoc(makeReq(), buildRes()))
+    ).rejects.toBeDefined();
+
+    expect(mockDeleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () => {
+  const axios = require('axios');
+  const { DocumentRun } = require('../../models/DocumentRun');
+  const mockCreate = DocumentRun.create as jest.Mock;
+  let controller: DocumentsGeneratorController;
+  let prevReadyState: number;
+
+  function makeReq(overrides: any = {}) {
+    return {
+      body: {
+        tfsCollectionUri: 'https://org',
+        PAT: 'pat',
+        teamProjectName: 'project',
+        templateFile: 'http://template.dotx',
+        formattingSettings: {},
+        uploadProperties: { bucketName: 'ATTACH_MENTS' },
+        ...overrides,
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.dgContentControlUrl = 'http://cc';
+    process.env.jsonToWordPostUrl = 'http://jw';
+    controller = new DocumentsGeneratorController();
+    prevReadyState = (mongoose.connection as any).readyState;
+    (mongoose.connection as any).readyState = 1;
+    axios.post
+      .mockResolvedValueOnce({ data: { template: true } })
+      .mockResolvedValueOnce({ data: { url: 'http://doc' } });
+    genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
+  });
+
+  afterEach(() => {
+    (mongoose.connection as any).readyState = prevReadyState;
+  });
+
+  test('persists the explicit docType from the request', async () => {
+    await runContextStore.run({ runId: 'run-explicit' }, () =>
+      controller.createJSONDoc(makeReq({ docType: 'svd' }), buildRes())
+    );
+
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ docType: 'SVD' }));
+  });
+
+  test('falls back to deriving docType from templateFile when none is supplied', async () => {
+    await runContextStore.run({ runId: 'run-fallback' }, () =>
+      controller.createJSONDoc(
+        makeReq({ templateFile: 'http://host/templates/shared/SVD/Software%20Version%20Description.dotx' }),
+        buildRes()
+      )
+    );
+
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ docType: 'SVD' }));
+  });
+
+  test('leaves docType undefined for a template-less request', async () => {
+    await runContextStore.run({ runId: 'run-no-template' }, () =>
+      controller.createJSONDoc(makeReq({ templateFile: '' }), buildRes())
+    );
+
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ docType: undefined }));
+  });
+
+  // Phase 7b — proves the precondition installRunIdForwarding's interceptor depends on: the
+  // RunContext object itself (not just the DocumentRun record) carries docType.
+  test('mutates the RunContext object with docType', async () => {
+    const runContext: { runId?: string; docType?: string } = { runId: 'run-mutate' };
+    await runContextStore.run(runContext as any, () =>
+      controller.createJSONDoc(makeReq({ docType: 'svd' }), buildRes())
+    );
+    expect(runContext.docType).toBe('SVD');
+  });
+
+  // ...and independent of the Mongo/runId guard, since it's set before that early return.
+  test('mutates the RunContext object with docType even when Mongo is down / there is no runId', async () => {
+    (mongoose.connection as any).readyState = 0;
+    const noMongoContext: { docType?: string } = {};
+    await runContextStore.run(noMongoContext as any, () =>
+      controller.createJSONDoc(makeReq({ docType: 'stp' }), buildRes())
+    );
+    expect(noMongoContext.docType).toBe('STP');
   });
 });

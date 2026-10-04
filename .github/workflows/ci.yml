@@ -19,6 +19,8 @@ jobs:
           cache: 'npm'
       - name: 📦 install deps
         run: npm ci
+      - name: 🔍 lint
+        run: npm run lint
       - name: 🧪 run tests (with coverage)
         run: npm test
       - name: ⬆️ upload coverage artifact

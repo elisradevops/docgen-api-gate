@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import logger from './logger';
+import { runContextStore } from './runContext';
 
 // When running in Docker, use the service name instead of localhost
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://root:example@mongodb:27017/docgen?authSource=admin';
@@ -51,11 +52,18 @@ const scheduleReconnect = (): void => {
   reconnectScheduled = true;
   const delay = nextReconnectDelayMs(reconnectAttempt);
   reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectScheduled = false;
-    if (mongoose.connection.readyState === 0) {
-      attemptConnect();
-    }
+    // This timer runs on its own, not inside any particular request — Node's timers
+    // inherit whichever AsyncLocalStorage context happened to be active when they were
+    // scheduled (here, whatever request was in flight when the 'disconnected' event
+    // fired), which would stamp reconnect-loop logs with a stale, unrelated runId.
+    // exit() clears that inherited context before the reconnect logic runs.
+    runContextStore.exit(() => {
+      reconnectTimer = null;
+      reconnectScheduled = false;
+      if (mongoose.connection.readyState === 0) {
+        attemptConnect();
+      }
+    });
   }, delay);
 };
 

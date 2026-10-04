@@ -10,11 +10,16 @@ import { DatabaseController } from '../controllers/DatabaseController';
 import { DataProviderController } from '../controllers/DataProviderController';
 import { SharePointController } from '../controllers/SharePointController';
 import { AuthController } from '../controllers/AuthController';
+import { DiagnosticsController } from '../controllers/DiagnosticsController';
+import { DiagnosticsQueryController } from '../controllers/DiagnosticsQueryController';
+import { IssueController } from '../controllers/IssueController';
 import { requireSession } from '../helpers/auth/requireSession';
 import { requireCsrf } from '../helpers/auth/requireCsrf';
 import { attachSessionIfPresent } from '../helpers/auth/attachSessionIfPresent';
+import { requireIngestToken } from '../helpers/auth/requireIngestToken';
 import { requireMongo } from '../helpers/db/requireMongo';
 import { probeMongoConnection } from '../util/mongodb';
+import { runContextStore } from '../util/runContext';
 const Minio = require('minio');
 
 export class Routes {
@@ -24,6 +29,9 @@ export class Routes {
   public dataProviderController: DataProviderController = new DataProviderController();
   public sharePointController: SharePointController = new SharePointController();
   public authController: AuthController = new AuthController();
+  public diagnosticsController: DiagnosticsController = new DiagnosticsController();
+  public diagnosticsQueryController: DiagnosticsQueryController = new DiagnosticsQueryController();
+  public issueController: IssueController = new IssueController();
 
   public routes(app: any, upload: any): void {
     app.route('/health').get(async (_req: Request, res: Response) => {
@@ -444,14 +452,113 @@ export class Routes {
       res.status(503).json({ ok: false, mongodb: 'disconnected' });
     });
 
+    // Phase 6a — relay path for services with no Mongo credentials of their own
+    // (docgen-content-control, forwarding its own logger's events plus
+    // docgen-data-provider-package's and docgen-dg-skins-package's). api-gate's own events go
+    // straight through MongoLogSink instead of this endpoint. Service-to-service only, guarded
+    // by a shared secret rather than requireSession (which resolves a user AuthSession — a
+    // service has none).
+    app
+      .route('/diagnostics/logs')
+      .post(requireIngestToken, (req: Request, res: Response) => {
+        this.diagnosticsController.ingestLogs(req, res);
+      });
+
+    // Phase 6c — the Issue model's only mutation (no ignore/mute/assign). requireMongo is
+    // sufficient: the app has no role model and the normal ADO-PAT login path never establishes
+    // a SharePoint SSO session, so requireSession would permanently block every user.
+    app
+      .route('/diagnostics/issues/:issueId/resolve')
+      .post(requireMongo, (req: Request, res: Response) => {
+        this.issueController.resolve(req, res).catch((err) => {
+          res.status(500).json({ message: `Failed to resolve issue: ${err}`, error: err });
+        });
+      });
+
+    // Phase 7a — read-only Monitoring endpoints. requireMongo alone, matching
+    // /dataBase/getFavorites (the only other read-only Mongo GET in this repo): no GET here is
+    // session-guarded except /auth/session, and gating the dashboard on SharePoint SSO — a
+    // flow the ADO-PAT generation path never requires — would make it invisible in normal use.
+    // Only the resolve mutation above needs an acting identity, hence keeps requireSession.
+    app.route('/diagnostics/overview').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getOverview(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to load diagnostics overview: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/issues').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.listIssues(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to list issues: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/issues/:issueId').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getIssue(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to load issue: ${err}`, error: err });
+      });
+    });
+
+    // Phase 7b — the Logs explorer's three read endpoints. Same requireMongo-only guard as the
+    // rest of /diagnostics/*'s reads above.
+    app.route('/diagnostics/events').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.listEvents(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to list events: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/events/facets').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getEventFacets(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to load event facets: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/events/histogram').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getEventHistogram(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to load event histogram: ${err}`, error: err });
+      });
+    });
+
+    // Phase 7c — run detail, generic manifest comparison, and the DOCX report (built directly
+    // from Mongo data, no docgen-content-control round trip — see reportContent.ts). Same
+    // requireMongo-only guard as the rest of /diagnostics/*'s reads above. Registered before
+    // /diagnostics/compare/report so the more specific path wins if Express's route matching
+    // ever cares about registration order for these non-overlapping patterns.
+    app.route('/diagnostics/compare').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.compareRuns(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to compare runs: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/compare/report').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getCompareReport(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to build compare report: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/runs').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.listRuns(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to list runs: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/runs/:runId').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getRunDetail(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to load run: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/runs/:runId/baseline').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getBaseline(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to find baseline run: ${err}`, error: err });
+      });
+    });
+    app.route('/diagnostics/runs/:runId/report').get(requireMongo, (req: Request, res: Response) => {
+      this.diagnosticsQueryController.getRunReport(req, res).catch((err) => {
+        res.status(500).json({ message: `Failed to build run report: ${err}`, error: err });
+      });
+    });
+
     app.route('/jsonDocument').get((req: Request, res: Response) => {
       res.status(200).json({ status: 'online - ' + moment().format() });
     });
     app.route('/jsonDocument/create').post(async (req: Request, res: Response) => {
+      const runId = runContextStore.getStore()?.runId;
       this.documentsGeneratorController
         .createJSONDoc(req, res)
         .then((documentUrl) => {
-          res.status(200).json({ documentUrl });
+          res.status(200).json({ documentUrl, runId });
         })
         .catch((err) => {
           const statusCode = Number(err?.statusCode || 500);
@@ -460,6 +567,8 @@ export class Routes {
             code: err?.code,
             dependency: err?.dependency,
             url: err?.url,
+            contentControlFailures: err?.contentControlFailures,
+            runId,
             //Error not structured correctly
             error: err,
           });

@@ -3,20 +3,24 @@ import { DataProviderController } from '../../controllers/DataProviderController
 
 jest.mock('axios', () => {
   const post = jest.fn();
-  const create = jest.fn(() => ({ post }));
+  const create = jest.fn(() => ({ post, interceptors: { request: { use: jest.fn() } } }));
   return { __esModule: true, default: { create }, create, post } as any;
 });
 
 // Silence logger if used indirectly
 jest.mock('../../util/logger', () => ({
-  debug: jest.fn(),
-  info: jest.fn(),
-  warn: jest.fn(),
-  error: jest.fn(),
+  __esModule: true,
+  default: {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  },
 }));
 
 describe('DataProviderController', () => {
   const axiosMod = require('axios');
+  const loggerMod = require('../../util/logger').default;
   let controller: DataProviderController;
 
   beforeEach(() => {
@@ -103,6 +107,12 @@ describe('DataProviderController', () => {
       upstreamPath: '/azure/git/repos/r1/pull-requests',
       error: { msg: 'cc down' },
     });
+    // Previously this controller had no logger import at all — every one of its ~28 handlers'
+    // upstream failures went straight into the HTTP response with no server-side log line.
+    expect(loggerMod.error).toHaveBeenCalledWith(
+      expect.stringContaining('/azure/git/repos/r1/pull-requests'),
+      expect.anything()
+    );
   });
 
   /**

@@ -9,6 +9,9 @@ export interface DocumentRequest {
   vcrmQueryId: string;
   userEmail: string;
   formattingSettings: FormattingSettings;
+  // Sent by the frontend (the picked document-type tab); absent for the external SVD
+  // pipeline's requests, which never set it. See helpers/runDocType.ts for the fallback.
+  docType?: string;
 }
 export interface UploadProperties {
   bucketName: string;

@@ -307,7 +307,7 @@ describe('JsonDocRoutes', () => {
     );
 
     expect(routes.documentsGeneratorController.createJSONDoc).toHaveBeenCalled();
-    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' } });
+    expect(res.body).toEqual({ documentUrl: { url: 'http://doc' }, runId: expect.any(String) });
   });
 
   test('POST /jsonDocument/create returns 500 when controller rejects', async () => {
@@ -879,5 +879,70 @@ describe('JsonDocRoutes', () => {
         expect(res.headers['access-control-allow-headers']).toEqual(expect.stringContaining('X-Csrf-Token'));
       });
     });
+
+    // Regression: the frontend sends x-docgen-run-id on /jsonDocument/create (see
+    // docManagerApi.jsx's sendDocumentToGenerator) so a missing entry here silently
+    // breaks that request in the browser as an opaque CORS/network error, not a
+    // clear 403 — this is the failure mode that was actually hit.
+    test('preflight succeeds for the X-Docgen-Run-Id header used to correlate a generation run', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent
+          .options('/jsonDocument/create')
+          .set('Origin', 'https://docgen.example.com')
+          .set('Access-Control-Request-Method', 'POST')
+          .set('Access-Control-Request-Headers', 'Content-Type, X-Docgen-Run-Id');
+        expect(res.status).toBe(204);
+        expect(res.headers['access-control-allow-headers']).toEqual(
+          expect.stringContaining('X-Docgen-Run-Id')
+        );
+      });
+    });
+
+    // Regression: Phase 6b's frontend toggle sends x-docgen-capture-mode on
+    // /jsonDocument/create (docManagerApi.jsx's sendDocumentToGenerator) — the exact same
+    // failure mode as X-Docgen-Run-Id above, caught live this session (an opaque CORS/network
+    // error in the browser, not a clear 403) before this entry was added.
+    test('preflight succeeds for the X-Docgen-Capture-Mode header used for verbose/retain-on-failure capture', async () => {
+      process.env.CORS_ALLOWED_ORIGINS = 'https://docgen.example.com';
+      const { app } = createAppAndRoutes();
+
+      await withLocalAgent(app, async (agent) => {
+        const res = await agent
+          .options('/jsonDocument/create')
+          .set('Origin', 'https://docgen.example.com')
+          .set('Access-Control-Request-Method', 'POST')
+          .set('Access-Control-Request-Headers', 'Content-Type, X-Docgen-Capture-Mode');
+        expect(res.status).toBe(204);
+        expect(res.headers['access-control-allow-headers']).toEqual(
+          expect.stringContaining('X-Docgen-Capture-Mode')
+        );
+      });
+    });
+  });
+});
+
+describe('POST /diagnostics/issues/:issueId/resolve', () => {
+  function createAppAndRoutes(): any {
+    const AppClass = require('../../app').default as typeof App;
+    const appInstance = new AppClass();
+    return { app: appInstance.app, routes: appInstance.routePrv as any };
+  }
+
+  test('does not require a session — requireSession was removed; 401 must not be returned', async () => {
+    // The app has no role model; requireSession was removed so that resolve works for all users
+    // in the normal ADO-PAT login path (which never establishes a SharePoint SSO session).
+    // requireMongo may still return 503 when Mongo is not connected in the test environment —
+    // that is acceptable; the assertion is specifically that the session guard is gone (no 401).
+    const { app, routes } = createAppAndRoutes();
+    routes.issueController.resolve = jest.fn().mockResolvedValue(undefined);
+
+    await withLocalAgent(app, (agent) =>
+      agent.post('/diagnostics/issues/issue-1/resolve').expect((res) => {
+        expect(res.status).not.toBe(401);
+      })
+    );
   });
 });
