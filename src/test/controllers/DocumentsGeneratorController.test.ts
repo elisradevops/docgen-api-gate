@@ -708,6 +708,65 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
     expect(genMock.generateContentControls).not.toHaveBeenCalled();
   });
 
+  test('stores the curated input on the run when it starts', async () => {
+    await runContextStore.run({ runId: 'run-input' }, () =>
+      controller.createJSONDoc(
+        makeReq({
+          uploadProperties: {
+            bucketName: 'b',
+            fileName: 'f',
+            inputSummary: 'Doc Type: STD | Test Plan: 42',
+            inputDetails: JSON.stringify({ version: 1, docType: 'STD' }),
+            AwsAccessKeyId: 'k',
+            AwsSecretAccessKey: 's',
+            Region: 'eu',
+            ServiceUrl: 'http://minio',
+            EnableDirectDownload: false,
+          },
+        }),
+        buildRes()
+      )
+    );
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-input',
+        input: { summary: 'Doc Type: STD | Test Plan: 42', details: { version: 1, docType: 'STD' } },
+      })
+    );
+  });
+
+  test('a run that fails at the template check still records its input and inputs', async () => {
+    const { DocumentRun } = require('../../models/DocumentRun');
+    axios.get.mockResolvedValueOnce({ status: 404, data: { destroy: jest.fn() } });
+    await runContextStore
+      .run({ runId: 'run-early-fail' }, () =>
+        controller.createJSONDoc(
+          makeReq({
+            templateFile: 'http://s3/templates/shared/STD/STD.dotx',
+            uploadProperties: {
+              bucketName: 'b',
+              fileName: 'f',
+              inputSummary: 'Doc Type: STD',
+              inputDetails: JSON.stringify({ version: 1 }),
+              AwsAccessKeyId: 'k',
+              AwsSecretAccessKey: 's',
+              Region: 'eu',
+              ServiceUrl: 'http://minio',
+              EnableDirectDownload: false,
+            },
+          }),
+          buildRes()
+        )
+      )
+      .catch(() => undefined);
+    // The run record carries the curated input from the start...
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-early-fail', input: expect.anything() }));
+    // ...and the manifest written when the run failed already holds the technical inputs, which
+    // used to be recorded only after content generation (so an early failure had none).
+    const failedUpdate = (DocumentRun.updateOne as jest.Mock).mock.calls.find(([, u]) => u.$set?.status === 'failed');
+    expect(failedUpdate?.[1].$set.manifest.inputs).toMatchObject({ templateName: 'http://s3/templates/shared/STD/STD.dotx' });
+  });
+
   test('stores the session id on the run record', async () => {
     await runContextStore.run({ runId: 'run-sess', sessionId: 'ses-9d2f' }, () =>
       controller.createJSONDoc(makeReq(), buildRes())
