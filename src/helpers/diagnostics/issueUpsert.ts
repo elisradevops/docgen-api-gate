@@ -7,7 +7,7 @@
 // case — one otherwise (the always-run upsert already returns the pre-update document, no
 // extra read needed to make that decision).
 import { Issue, ISSUE_OCCURRENCE_RUN_IDS_CAP } from '../../models/Issue';
-import { REQUEST_ID_PREFIX } from '../../util/runContext';
+import { isCorrelationOnlyId } from '../../util/runContext';
 
 export interface IssueUpsertEvent {
   signature: string;
@@ -60,9 +60,9 @@ export async function upsertIssuesForEvents(events: IssueUpsertEvent[]): Promise
     group.count++;
     if (event.project) group.projects.add(event.project);
     if (event.docType) group.docTypes.add(event.docType);
-    // Only real document runs are occurrences: a request id (req-…) has no run record to open or
-    // compare, so listing it would give the "Open run" shortcut nothing to open.
-    if (event.runId && !event.runId.startsWith(REQUEST_ID_PREFIX) && !group.runIds.includes(event.runId)) {
+    // Only real document runs are occurrences: a request id (req-…) or a session id (ses-…) has no
+    // run record to open or compare, so listing it would give "Open run" nothing to open.
+    if (event.runId && !isCorrelationOnlyId(event.runId) && !group.runIds.includes(event.runId)) {
       group.runIds.push(event.runId);
     }
   }

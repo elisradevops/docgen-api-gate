@@ -5,6 +5,9 @@ import mongoose from 'mongoose';
 
 jest.mock('axios', () => ({
   post: jest.fn(),
+  // The template preflight's ranged GET. Unmocked it returns undefined, which the preflight treats
+  // as "could not verify" and moves on, so tests that don't care about it are unaffected.
+  get: jest.fn(),
 }));
 
 jest.mock('../../util/logger', () => ({
@@ -689,6 +692,27 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
       controller.createJSONDoc(makeReq({ PAT: 'bad-pat-for-this-test' }), buildRes())
     );
     expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-cap-bad', captureMode: undefined }));
+  });
+
+  test('a missing template fails the run before any content is fetched, naming the template', async () => {
+    axios.get.mockResolvedValueOnce({ status: 404, data: { destroy: jest.fn() } });
+    const res = buildRes();
+    const err: any = await runContextStore
+      .run({ runId: 'run-no-template' }, () =>
+        controller.createJSONDoc(makeReq({ templateFile: 'http://s3/templates/shared/STD/STD.dotx' }), res)
+      )
+      .catch((e: any) => e);
+    expect(err).toMatchObject({ statusCode: 404, code: 'TEMPLATE_NOT_FOUND' });
+    expect(err.message).toContain('templates/shared/STD/STD.dotx');
+    expect(axios.post).not.toHaveBeenCalled(); // never reached content-control or json-to-word
+    expect(genMock.generateContentControls).not.toHaveBeenCalled();
+  });
+
+  test('stores the session id on the run record', async () => {
+    await runContextStore.run({ runId: 'run-sess', sessionId: 'ses-9d2f' }, () =>
+      controller.createJSONDoc(makeReq(), buildRes())
+    );
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-sess', sessionId: 'ses-9d2f' }));
   });
 
   test('persists the explicit docType from the request', async () => {

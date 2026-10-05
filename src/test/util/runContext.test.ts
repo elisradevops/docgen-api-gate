@@ -2,7 +2,15 @@ import * as winston from 'winston';
 import Transport from 'winston-transport';
 import type { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { withRunContext } from '../../util/logger';
-import { attachRunContext, installRunIdForwarding, resolveRunId, runContextStore } from '../../util/runContext';
+import {
+  attachRunContext,
+  installRunIdForwarding,
+  resolveRunId,
+  runContextStore,
+  sanitizeContextHeader,
+  isCorrelationOnlyId,
+  toHeaderValue,
+} from '../../util/runContext';
 
 class CaptureTransport extends Transport {
   lines: Record<string, unknown>[] = [];
@@ -96,6 +104,60 @@ describe('attachRunContext request ids', () => {
 
   test('the prefixed id still satisfies the run id pattern', () => {
     expect(runIdFor({}, '/azure/projects')).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  });
+});
+
+describe('attachRunContext context headers and session id', () => {
+  const fakeReq = (headers: Record<string, string>, path: string) =>
+    ({ header: (name: string) => headers[name.toLowerCase()], path } as any);
+  const fakeRes = () => ({ setHeader: () => undefined } as any);
+  const storeFor = (headers: Record<string, string>, path: string) => {
+    let store: any;
+    attachRunContext(fakeReq(headers, path), fakeRes(), () => {
+      store = runContextStore.getStore();
+    });
+    return store;
+  };
+
+  test('picker requests take project and doc type from the headers (percent-decoded, doc type uppercased)', () => {
+    const s = storeFor(
+      { 'x-docgen-project': encodeURIComponent('פרויקט MEWP'), 'x-docgen-doc-type': 'std' },
+      '/azure/queries'
+    );
+    expect(s.project).toBe('פרויקט MEWP');
+    expect(s.docType).toBe('STD');
+  });
+
+  test('generation ignores those headers (the request body is authoritative there)', () => {
+    const s = storeFor({ 'x-docgen-project': 'Spoofed', 'x-docgen-doc-type': 'svd' }, '/jsonDocument/create');
+    expect(s.project).toBeUndefined();
+    expect(s.docType).toBeUndefined();
+  });
+
+  test('values are bounded and stripped of control characters (log injection guard)', () => {
+    expect(sanitizeContextHeader('a'.repeat(500), 128)).toHaveLength(128);
+    expect(sanitizeContextHeader('MEWP\r\nFAKE: line', 128)).toBe('MEWPFAKE: line');
+    expect(sanitizeContextHeader('%E0%A4%A', 128)).toBe('%E0%A4%A'); // malformed escape: used as sent
+    expect(sanitizeContextHeader('   ', 128)).toBeUndefined();
+    expect(sanitizeContextHeader(undefined, 128)).toBeUndefined();
+  });
+
+  test('a valid ses- session id is recorded; anything else is dropped', () => {
+    expect(storeFor({ 'x-docgen-session-id': 'ses-abc_123' }, '/jsonDocument/create').sessionId).toBe('ses-abc_123');
+    expect(storeFor({ 'x-docgen-session-id': 'run-abc' }, '/jsonDocument/create').sessionId).toBeUndefined();
+    expect(storeFor({ 'x-docgen-session-id': 'ses-bad id!' }, '/jsonDocument/create').sessionId).toBeUndefined();
+    expect(storeFor({ 'x-docgen-session-id': 'ses-' + 'x'.repeat(80) }, '/jsonDocument/create').sessionId).toBeUndefined();
+  });
+
+  test('a ses- id used as the run id on a picker call is kept as is (valid client-supplied id)', () => {
+    expect(storeFor({ 'x-docgen-run-id': 'ses-9d2f' }, '/azure/queries').runId).toBe('ses-9d2f');
+  });
+
+  test('isCorrelationOnlyId recognises request and session ids only', () => {
+    expect(isCorrelationOnlyId('req-1')).toBe(true);
+    expect(isCorrelationOnlyId('ses-1')).toBe(true);
+    expect(isCorrelationOnlyId('3f2504e0-4f89-11d3')).toBe(false);
+    expect(isCorrelationOnlyId(undefined)).toBe(false);
   });
 });
 
@@ -268,6 +330,24 @@ describe('installRunIdForwarding', () => {
       outConfig = run({ headers: {} });
     });
     expect(outConfig.headers['x-docgen-run-id']).toBeUndefined();
+  });
+
+  test('a non-ASCII project name is percent-encoded so the outbound call is not rejected', () => {
+    const { instance, run } = makeFakeAxiosInstance();
+    installRunIdForwarding(instance);
+    let outConfig: any;
+    runContextStore.run({ runId: 'run-xyz', project: 'פרויקט MEWP', docType: 'STD' }, () => {
+      outConfig = run({ url: CC, headers: {} });
+    });
+    const sent = outConfig.headers['x-docgen-project'];
+    expect(sent).toMatch(/^[\x20-\x7e]+$/); // what Node requires of a header value
+    expect(decodeURIComponent(sent)).toBe('פרויקט MEWP');
+  });
+
+  test('an ASCII project name goes through unchanged (spaces and all)', () => {
+    expect(toHeaderValue('Cube ADCS')).toBe('Cube ADCS');
+    expect(toHeaderValue('MEWP')).toBe('MEWP');
+    expect(toHeaderValue('Projét')).toBe('Proj%C3%A9t');
   });
 });
 

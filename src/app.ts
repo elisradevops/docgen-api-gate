@@ -121,6 +121,9 @@ export default class App {
         'X-Csrf-Token',
         'X-Docgen-Run-Id',
         'X-Docgen-Capture-Mode',
+        'X-Docgen-Project',
+        'X-Docgen-Doc-Type',
+        'X-Docgen-Session-Id',
       ],
       optionsSuccessStatus: 204,
     };

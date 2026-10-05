@@ -166,6 +166,12 @@ describe('upsertIssuesForEvents (grouped)', () => {
     expect(update.$push.occurrenceRunIds.$each).toEqual(['run-real']);
   });
 
+  test('session ids (ses-…) are not occurrences either', async () => {
+    await upsertIssuesForEvents([ev({ runId: 'ses-9d2f' }), ev({ runId: 'run-real' })]);
+    const [, update] = mockFindOneAndUpdate.mock.calls[0];
+    expect(update.$push.occurrenceRunIds.$each).toEqual(['run-real']);
+  });
+
   test('a group made only of request-id events has no $push at all', async () => {
     await upsertIssuesForEvents([ev({ runId: 'req-abc' })]);
     const [, update] = mockFindOneAndUpdate.mock.calls[0];
