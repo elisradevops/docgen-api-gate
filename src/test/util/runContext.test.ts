@@ -107,6 +107,24 @@ describe('attachRunContext request ids', () => {
   });
 });
 
+describe('step and content control on log records', () => {
+  test('withRunContext stamps the ambient step; an explicit value in the call wins', () => {
+    const { logger, capture } = makeTestLogger();
+    runContextStore.run({ runId: 'r-step', step: 'render-document' }, () => {
+      logger.warn('ambient');
+      logger.warn('explicit', { step: 'generate-content-control', contentControlTitle: 'T' });
+    });
+    expect(capture.lines[0]).toMatchObject({ runId: 'r-step', step: 'render-document' });
+    expect(capture.lines[1]).toMatchObject({ step: 'generate-content-control', contentControlTitle: 'T' });
+  });
+
+  test('nothing is stamped outside a run', () => {
+    const { logger, capture } = makeTestLogger();
+    logger.warn('outside');
+    expect(capture.lines[0].step).toBeUndefined();
+  });
+});
+
 describe('attachRunContext context headers and session id', () => {
   const fakeReq = (headers: Record<string, string>, path: string) =>
     ({ header: (name: string) => headers[name.toLowerCase()], path } as any);

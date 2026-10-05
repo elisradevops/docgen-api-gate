@@ -20,6 +20,7 @@ import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../help
 import { resolveDocType } from '../helpers/runDocType';
 import { authorizeCaptureMode } from '../helpers/diagnostics/captureAuthorization';
 import { assertTemplateExists } from '../helpers/templatePreflight';
+import { buildRunInput } from '../helpers/runInput';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
@@ -35,13 +36,18 @@ export class DocumentsGeneratorController {
         // Before the run record, so the record (and every later log) reflects the effective mode.
         await authorizeCaptureMode(runContext, documentRequest.tfsCollectionUri, documentRequest.PAT);
         await this.createRunRecord(runContext, startedAt, documentRequest);
+        // Recorded now, not after content generation: a run that fails early (template, doc
+        // template, a content control's fetch) must still say what it was asked to do.
+        manifest.inputs = buildInputs(documentRequest);
         // After the run record, so a missing template is recorded on the run; before any data
         // is fetched, so it fails in seconds instead of after the whole generation.
+        if (runContext) runContext.step = 'validate-template';
         await assertTemplateExists(documentRequest.templateFile);
         const jsonDocumentGenerator: JSONDocumentGenerator = new JSONDocumentGenerator();
 
         try {
           let docTemplateResponse: any;
+          if (runContext) runContext.step = 'generate-doc-template';
           const docTemplateStartedAt = Date.now();
           try {
             docTemplateResponse = await axios.post(
@@ -85,6 +91,7 @@ export class DocumentsGeneratorController {
           const docTemplate = docTemplateResponse.data;
           docTemplate.uploadProperties = documentRequest.uploadProperties;
           let contentControls: any[];
+          if (runContext) runContext.step = 'generate-content-controls';
           try {
             const generated = await jsonDocumentGenerator.generateContentControls(documentRequest);
             contentControls = generated.results;
@@ -109,7 +116,7 @@ export class DocumentsGeneratorController {
           const resolvedCtx = (contentControls as any[])
             .map((c) => c?.resolvedContextName)
             .find((n) => !!n);
-          manifest.inputs = buildInputs(documentRequest, resolvedCtx);
+          if (resolvedCtx && manifest.inputs) manifest.inputs.resolvedContextName = resolvedCtx;
           const hasAutoDiscoveredRange = (documentRequest.contentControls || []).some((cc) => {
             const data = (cc as any).data || {};
             return (data.rangeType === 'release' || data.rangeType === 'pipeline') &&
@@ -140,6 +147,7 @@ export class DocumentsGeneratorController {
             };
           }
           let documentUrl: any;
+          if (runContext) runContext.step = 'render-document';
           const renderStartedAt = Date.now();
           try {
             documentUrl = await axios.post(
@@ -231,6 +239,7 @@ export class DocumentsGeneratorController {
         docType,
         captureMode: runContext.captureMode,
         sessionId: runContext.sessionId,
+        input: buildRunInput(documentRequest),
         templateName: documentRequest.templateFile,
         expiresAt: new Date(startedAt.getTime() + DOCUMENT_RUN_RETENTION_MS),
       });

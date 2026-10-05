@@ -39,7 +39,7 @@ export function buildEnvironment(contentControlVersions?: ContentControlVersions
 // A content control's `data` can embed whole tables or documents; the manifest lives in one Mongo
 // document (16MB cap) that is written at run end, so an oversized blob would fail the finalize
 // write and leave the run looking "running". Oversized parts are replaced by a size marker.
-const MAX_CONTROL_DATA_BYTES = 64 * 1024;
+export const MAX_CONTROL_DATA_BYTES = 64 * 1024;
 const MAX_INPUTS_BYTES = 256 * 1024;
 
 function jsonBytes(value: unknown): number {
@@ -50,7 +50,7 @@ function jsonBytes(value: unknown): number {
   }
 }
 
-function boundedData(data: unknown, maxBytes: number): unknown {
+export function boundedData(data: unknown, maxBytes: number): unknown {
   const bytes = jsonBytes(data);
   return bytes > maxBytes ? { omitted: true, bytes: Number.isFinite(bytes) ? bytes : undefined } : data;
 }

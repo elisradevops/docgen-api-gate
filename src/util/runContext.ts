@@ -34,6 +34,13 @@ export interface RunContext {
   // header at middleware time the way captureMode has one.
   docType?: string;
   project?: string;
+  // The generation stage api-gate is in (validate-template, generate-doc-template,
+  // generate-content-controls, render-document), set by createJSONDoc as it moves through its
+  // sequential stages. Stamped on api-gate's own records. Per-content-control attribution during
+  // the concurrent fan-out is passed per log call instead (the shared store can't hold it).
+  step?: string;
+  contentControlType?: string;
+  contentControlTitle?: string;
 }
 
 // Symbol.for uses the global symbol registry, so every duplicated copy of this file across

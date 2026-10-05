@@ -23,7 +23,11 @@ export class JSONDocumentGenerator {
   public async generateContentControls(documentRequest: DocumentRequest): Promise<GenerateContentControlsResult> {
     const settled = await Promise.allSettled(
       documentRequest.contentControls.map(async (contentControl) => {
-        logger.info(`generating ${contentControl.type} content for: ${contentControl.title}`);
+        logger.info(`generating ${contentControl.type} content for: ${contentControl.title}`, {
+          step: 'generate-content-control',
+          contentControlType: contentControl.type,
+          contentControlTitle: contentControl.title,
+        });
         const startedAt = Date.now();
         try {
           let contentControlResponse = await axios.post(
@@ -51,7 +55,17 @@ export class JSONDocumentGenerator {
           );
           return { data: contentControlResponse.data, startedAt };
         } catch (err: any) {
-          logger.error(`Error adding content control ${contentControl.title}`, err);
+          // Attribution goes per call, not on the shared run store (these controls run concurrently),
+          // in ONE metadata object: winston merges only the first one. The error's message, stack
+          // and code are listed explicitly instead of passing the whole AxiosError.
+          logger.error(`Error adding content control ${contentControl.title}`, {
+            message: err?.message,
+            stack: err?.stack,
+            code: typeof err?.code === 'string' ? err.code : undefined,
+            step: 'generate-content-control',
+            contentControlType: contentControl.type,
+            contentControlTitle: contentControl.title,
+          });
           err.__startedAt = startedAt;
           throw err;
         }

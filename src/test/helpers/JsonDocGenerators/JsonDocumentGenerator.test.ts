@@ -139,9 +139,17 @@ describe('JSONDocumentGenerator', () => {
       ],
     });
 
+    // One metadata object: the error's message/stack plus which step and content control failed,
+    // so the record can be attributed even though the controls run concurrently.
     expect(mockLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`Error adding content control ${baseRequest.contentControls[0].title}`),
-      boom
+      expect.objectContaining({
+        message: 'boom',
+        stack: boom.stack,
+        step: 'generate-content-control',
+        contentControlType: baseRequest.contentControls[0].type,
+        contentControlTitle: baseRequest.contentControls[0].title,
+      })
     );
   });
 

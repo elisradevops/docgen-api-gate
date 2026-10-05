@@ -54,6 +54,9 @@ export interface IDocumentRun extends Document {
   docType?: string;
   // Set only when verbose capture was actually active (requested AND authorized) for this run.
   captureMode?: 'verbose' | 'retain-on-failure';
+  // What the user asked for (the same summary/details the Documents tab shows), kept on the run so
+  // a run that failed — and so has no generated document — still has its input to look at.
+  input?: { summary?: string; details?: Record<string, unknown> };
   // The frontend working session (ses-<uuid>) this run was started from. Interactive activity
   // before the run is logged under that id, so run detail can show it.
   sessionId?: string;
@@ -133,6 +136,12 @@ const DocumentRunSchema = new Schema(
     docType: { type: String },
     captureMode: { type: String, enum: ['verbose', 'retain-on-failure'] },
     sessionId: { type: String },
+    input: {
+      type: new Schema(
+        { summary: { type: String }, details: { type: Schema.Types.Mixed } },
+        { _id: false }
+      ),
+    },
     templateName: { type: String },
     documentUrl: { type: String },
     errorChain: { type: [ErrorChainEntrySchema], default: [] },
