@@ -113,6 +113,23 @@ export interface ListEventsParams {
   // events" burst signal. Initial load / "load older" never set this, so they pay no extra
   // countDocuments cost.
   includeCount?: boolean;
+  // Live tail: only documents inserted at or after this instant (minus a small overlap), by their
+  // `_id` creation time — i.e. by ARRIVAL, not by the event's own `ts`. Events reach Mongo late and
+  // out of order (each service buffers and flushes on its own), so a poll that advanced a `ts`
+  // boundary would skip a slow service's older events for good. `_id` is generated when api-gate
+  // inserts the document, on one clock, and the default `_id` index serves the range, so this needs
+  // no extra index.
+  insertedAfter?: Date;
+}
+
+// Absorbs documents generated within the same second and a little clock difference between
+// api-gate pods; the client drops the resulting duplicates by id.
+export const INSERTED_AFTER_OVERLAP_SECONDS = 2;
+
+export function insertedAfterCondition(insertedAfter?: Date): Record<string, unknown> {
+  if (!insertedAfter || Number.isNaN(insertedAfter.getTime())) return {};
+  const seconds = Math.max(0, Math.floor(insertedAfter.getTime() / 1000) - INSERTED_AFTER_OVERLAP_SECONDS);
+  return { _id: { $gte: mongoose.Types.ObjectId.createFromTime(seconds) } };
 }
 
 export async function listEvents(params: ListEventsParams) {
@@ -121,7 +138,9 @@ export async function listEvents(params: ListEventsParams) {
   const limit = clampLimit(params.limit);
   const base = buildMatch(params.filters);
   const cursorCond = buildCursorCondition(sortBy, sortDir, decodeCursor(params.cursor));
-  const finalMatch = Object.keys(cursorCond).length ? { $and: [base, cursorCond] } : base;
+  const insertedCond = insertedAfterCondition(params.insertedAfter);
+  const conditions = [base, cursorCond, insertedCond].filter((c) => Object.keys(c).length > 0);
+  const finalMatch = conditions.length > 1 ? { $and: conditions } : conditions[0] ?? base;
 
   const sortDirection = sortDir === 'asc' ? 1 : -1;
   // Fetch one extra to know whether a next page exists without a separate countDocuments.
@@ -132,7 +151,11 @@ export async function listEvents(params: ListEventsParams) {
       .lean(),
     // Counted over `base` (pre-cursor), not `finalMatch` — this is "how many match the filters
     // overall", not "how many remain after this page's cursor position".
-    params.includeCount ? LogEvent.countDocuments(base) : Promise.resolve(undefined),
+    // Over the same window the live tail asks about (insertedAfter included), so "matched vs returned"
+    // is the burst size of THIS poll, not of the whole time range.
+    params.includeCount
+      ? LogEvent.countDocuments(Object.keys(insertedCond).length ? { $and: [base, insertedCond] } : base)
+      : Promise.resolve(undefined),
   ]);
 
   const hasMore = docs.length > limit;

@@ -18,6 +18,8 @@ import {
   listEvents,
   getEventFacets,
   getEventHistogram,
+  insertedAfterCondition,
+  INSERTED_AFTER_OVERLAP_SECONDS,
 } from '../../../helpers/diagnostics/eventQueries';
 
 function chainable(result: any[]) {
@@ -88,7 +90,70 @@ describe('cursor encode/decode', () => {
   });
 });
 
+describe('insertedAfterCondition (live tail by arrival)', () => {
+  test('no condition without a usable instant', () => {
+    expect(insertedAfterCondition(undefined)).toEqual({});
+    expect(insertedAfterCondition(new Date('not a date'))).toEqual({});
+  });
+
+  test('an _id lower bound from the creation time, minus the overlap', () => {
+    const at = new Date('2026-10-05T10:00:10.500Z');
+    const cond = insertedAfterCondition(at) as any;
+    const bound = cond._id.$gte as { getTimestamp: () => Date };
+    expect(bound.getTimestamp().getTime()).toBe(Math.floor(at.getTime() / 1000) * 1000 - INSERTED_AFTER_OVERLAP_SECONDS * 1000);
+  });
+
+  test('never goes below the epoch', () => {
+    const cond = insertedAfterCondition(new Date(500)) as any;
+    expect(cond._id.$gte.getTimestamp().getTime()).toBe(0);
+  });
+
+  test('is by the _id, not by ts: an event with an old ts but a new id still matches', () => {
+    // A late event (stamped 10:00:01, stored 10:00:12) has an _id created at 10:00:12, so it is
+    // inside the bound for a boundary of 10:00:10 even though its ts is far older.
+    const bound = (insertedAfterCondition(new Date('2026-10-05T10:00:10Z')) as any)._id.$gte;
+    const lateStored = require('mongoose').Types.ObjectId.createFromTime(Date.parse('2026-10-05T10:00:12Z') / 1000);
+    expect(lateStored.toHexString() >= bound.toHexString()).toBe(true);
+    const storedLongAgo = require('mongoose').Types.ObjectId.createFromTime(Date.parse('2026-10-05T09:00:00Z') / 1000);
+    expect(storedLongAgo.toHexString() >= bound.toHexString()).toBe(false);
+  });
+});
+
 describe('listEvents', () => {
+  test('insertedAfter is ANDed with the filters, and matchedCount stays over the same window', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    mockCountDocuments.mockResolvedValue(0);
+    await listEvents({ filters: { level: ['error'] }, insertedAfter: new Date('2026-10-05T10:00:10Z'), includeCount: true });
+    const match = mockFind.mock.calls[mockFind.mock.calls.length - 1][0];
+    expect(match.$and).toHaveLength(2);
+    expect(match.$and[0]).toEqual({ level: { $in: ['error'] } });
+    expect(match.$and[1]._id.$gte).toBeDefined();
+  });
+
+  test('matchedCount is counted over the same insertedAfter window, not the whole time range', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    mockCountDocuments.mockClear();
+    mockCountDocuments.mockResolvedValue(3);
+    const r = await listEvents({ filters: { since: new Date('2026-10-01') }, insertedAfter: new Date('2026-10-05T10:00:10Z'), includeCount: true });
+    expect(r.matchedCount).toBe(3);
+    const counted = mockCountDocuments.mock.calls[0][0];
+    expect(counted.$and).toHaveLength(2);
+    expect(counted.$and[1]._id.$gte).toBeDefined();
+  });
+
+  test('without insertedAfter the match is unchanged', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    await listEvents({ filters: { level: ['error'] } });
+    expect(mockFind.mock.calls[mockFind.mock.calls.length - 1][0]).toEqual({ level: { $in: ['error'] } });
+  });
+
+  test('insertedAfter alone (no other filter, no cursor) is the whole match', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    await listEvents({ filters: {}, insertedAfter: new Date('2026-10-05T10:00:10Z') });
+    const match = mockFind.mock.calls[mockFind.mock.calls.length - 1][0];
+    expect(Object.keys(match)).toEqual(['_id']);
+  });
+
   beforeEach(() => jest.clearAllMocks());
 
   test('defaults to newest-first (ts desc) with no cursor', async () => {

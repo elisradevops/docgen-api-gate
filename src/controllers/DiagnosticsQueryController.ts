@@ -144,8 +144,12 @@ export class DiagnosticsQueryController {
         cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
         limit: parsePositiveInt(req.query.limit),
         includeCount: req.query.includeCount === 'true',
+        insertedAfter: parseDate(req.query.insertedAfter),
       });
-      res.status(200).json(windowCapped ? { ...result, windowCapped: true } : result);
+      // serverTime: the live tail seeds and advances its boundary from the server's clock, never the
+      // browser's, so clock skew between the two can't drop events.
+      const body = { ...result, serverTime: new Date().toISOString() };
+      res.status(200).json(windowCapped ? { ...body, windowCapped: true } : body);
     } catch (err) {
       res.status(500).json({ message: 'Failed to list events', error: String(err) });
     }
