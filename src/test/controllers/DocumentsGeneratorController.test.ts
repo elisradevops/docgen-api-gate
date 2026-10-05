@@ -767,6 +767,37 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
     expect(failedUpdate?.[1].$set.manifest.inputs).toMatchObject({ templateName: 'http://s3/templates/shared/STD/STD.dotx' });
   });
 
+  test('createJSONDoc walks the run context through its stages in order', async () => {
+    const seen: string[] = [];
+    const record = () => {
+      const step = runContextStore.getStore()?.step;
+      if (step && seen[seen.length - 1] !== step) seen.push(step);
+    };
+    axios.post.mockReset();
+    axios.post
+      .mockImplementationOnce(async () => {
+        record(); // generate-doc-template
+        return { data: { template: true } };
+      })
+      .mockImplementationOnce(async () => {
+        record(); // render-document
+        return { data: { url: 'http://doc' } };
+      });
+    axios.get.mockImplementationOnce(async () => {
+      record(); // validate-template
+      return { status: 206, data: { destroy: jest.fn() } };
+    });
+    genMock.generateContentControls.mockReset(); // drop the result beforeEach queued
+    genMock.generateContentControls.mockImplementationOnce(async () => {
+      record(); // generate-content-controls
+      return { results: [{ cc: 1 }], steps: [], artifacts: [] };
+    });
+    await runContextStore.run({ runId: 'run-steps' }, () =>
+      controller.createJSONDoc(makeReq({ templateFile: 'http://s3/templates/shared/STD/STD.dotx' }), buildRes())
+    );
+    expect(seen).toEqual(['validate-template', 'generate-doc-template', 'generate-content-controls', 'render-document']);
+  });
+
   test('stores the session id on the run record', async () => {
     await runContextStore.run({ runId: 'run-sess', sessionId: 'ses-9d2f' }, () =>
       controller.createJSONDoc(makeReq(), buildRes())

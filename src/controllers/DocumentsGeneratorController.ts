@@ -41,11 +41,13 @@ export class DocumentsGeneratorController {
         manifest.inputs = buildInputs(documentRequest);
         // After the run record, so a missing template is recorded on the run; before any data
         // is fetched, so it fails in seconds instead of after the whole generation.
+        if (runContext) runContext.step = 'validate-template';
         await assertTemplateExists(documentRequest.templateFile);
         const jsonDocumentGenerator: JSONDocumentGenerator = new JSONDocumentGenerator();
 
         try {
           let docTemplateResponse: any;
+          if (runContext) runContext.step = 'generate-doc-template';
           const docTemplateStartedAt = Date.now();
           try {
             docTemplateResponse = await axios.post(
@@ -89,6 +91,7 @@ export class DocumentsGeneratorController {
           const docTemplate = docTemplateResponse.data;
           docTemplate.uploadProperties = documentRequest.uploadProperties;
           let contentControls: any[];
+          if (runContext) runContext.step = 'generate-content-controls';
           try {
             const generated = await jsonDocumentGenerator.generateContentControls(documentRequest);
             contentControls = generated.results;
@@ -144,6 +147,7 @@ export class DocumentsGeneratorController {
             };
           }
           let documentUrl: any;
+          if (runContext) runContext.step = 'render-document';
           const renderStartedAt = Date.now();
           try {
             documentUrl = await axios.post(
