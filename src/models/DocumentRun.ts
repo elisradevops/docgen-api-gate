@@ -54,6 +54,9 @@ export interface IDocumentRun extends Document {
   docType?: string;
   // Set only when verbose capture was actually active (requested AND authorized) for this run.
   captureMode?: 'verbose' | 'retain-on-failure';
+  // The frontend working session (ses-<uuid>) this run was started from. Interactive activity
+  // before the run is logged under that id, so run detail can show it.
+  sessionId?: string;
   templateName?: string;
   documentUrl?: string;
   errorChain: IDocumentRunErrorChainEntry[];
@@ -129,6 +132,7 @@ const DocumentRunSchema = new Schema(
     project: { type: String },
     docType: { type: String },
     captureMode: { type: String, enum: ['verbose', 'retain-on-failure'] },
+    sessionId: { type: String },
     templateName: { type: String },
     documentUrl: { type: String },
     errorChain: { type: [ErrorChainEntrySchema], default: [] },

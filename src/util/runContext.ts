@@ -22,6 +22,10 @@ export interface RunContext {
   // later, by authorizeCaptureMode (helpers/diagnostics/captureAuthorization.ts), once the
   // request's ADO credentials have been verified.
   requestedCaptureMode?: 'verbose' | 'retain-on-failure';
+  // The frontend's working session (ses-<uuid>): picker calls are logged under it as their run id
+  // and the generation that follows records it on its DocumentRun, so the activity that led up to
+  // a run can be shown with it. Only generation reads this.
+  sessionId?: string;
   // Phase 7b — set by DocumentsGeneratorController.createRunRecord *after* attachRunContext has
   // already started the store's run() call, since docType and project are only knowable once
   // the request body (not just headers) has been parsed. runContextStore.run(obj, next) stores
@@ -76,6 +80,37 @@ function isGenerationRequest(req: Request): boolean {
   return path === undefined || path === GENERATION_PATH;
 }
 
+export const SESSION_ID_PREFIX = 'ses-';
+const SESSION_ID_PATTERN = /^ses-[A-Za-z0-9_-]{1,60}$/;
+
+/** True for ids that only correlate log lines (a request or a session) — there is no run behind them. */
+export function isCorrelationOnlyId(id: string | undefined): boolean {
+  return !!id && (id.startsWith(REQUEST_ID_PREFIX) || id.startsWith(SESSION_ID_PREFIX));
+}
+
+function resolveSessionId(headerValue: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  return raw && SESSION_ID_PATTERN.test(raw) ? raw : undefined;
+}
+
+// x-docgen-project / x-docgen-doc-type come from the picker calls (project names may be non-ASCII,
+// so the frontend percent-encodes them). Client-settable, so same treatment as every other header
+// that reaches a log field: decode defensively, drop control characters (log injection), trim, bound.
+const PROJECT_MAX = 128;
+const DOC_TYPE_MAX = 40;
+export function sanitizeContextHeader(headerValue: string | string[] | undefined, max: number): string | undefined {
+  const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  let value = raw;
+  try {
+    value = decodeURIComponent(raw);
+  } catch {
+    // not percent-encoded (or malformed): use as sent
+  }
+  value = value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
+  return value || undefined;
+}
+
 // First middleware in the chain (see app.ts) so the whole request lifecycle — including
 // every downstream axios call made while handling it — runs inside the run context. Mints
 // once per incoming request, which for createJSONDoc means once per generation, not once
@@ -87,7 +122,25 @@ export function attachRunContext(req: Request, res: Response, next: NextFunction
   const requestedCaptureMode = resolveCaptureMode(req.header('x-docgen-capture-mode'));
   // Echoed back so a pipeline caller that didn't send one can pick up the minted id (Phase 5).
   res.setHeader('x-docgen-run-id', runId);
-  runContextStore.run({ runId, trigger: wasClientSupplied ? 'ui' : 'pipeline', requestedCaptureMode }, next);
+  const generation = isGenerationRequest(req);
+  // For generation, project and doc type come from the request body (createRunRecord) — the
+  // headers are not trusted there. For every other request (the pickers) they are the only
+  // source, and are what lets those records be filtered by project and doc type.
+  const project = generation ? undefined : sanitizeContextHeader(req.header('x-docgen-project'), PROJECT_MAX);
+  const docType = generation
+    ? undefined
+    : sanitizeContextHeader(req.header('x-docgen-doc-type'), DOC_TYPE_MAX)?.toUpperCase();
+  runContextStore.run(
+    {
+      runId,
+      trigger: wasClientSupplied ? 'ui' : 'pipeline',
+      requestedCaptureMode,
+      sessionId: resolveSessionId(req.header('x-docgen-session-id')),
+      docType,
+      project,
+    },
+    next
+  );
 }
 
 // The correlation headers are for DocGen's own services. The default axios instance is also used
@@ -123,6 +176,14 @@ function isInternalTarget(config: { url?: string; baseURL?: string }): boolean {
 // instance's interceptors, so each one needs this called on it explicitly; the plain
 // `import axios from 'axios'` default instance used elsewhere in this repo only needs it
 // installed once, since every such import resolves to the same module-cached singleton.
+// HTTP header values must be printable ASCII; Node refuses to send anything else ("Invalid character
+// in header content"), which failed the whole call for a project with a non-ASCII name. Such values
+// are percent-encoded (content-control decodes them); an ASCII value goes through exactly as before,
+// so what json-to-word and content-control show for ordinary names is unchanged.
+export function toHeaderValue(value: string): string {
+  return /[^\x20-\x7e]/.test(value) ? encodeURIComponent(value) : value;
+}
+
 export function installRunIdForwarding(instance: AxiosInstance): void {
   instance.interceptors.request.use((config) => {
     const store = runContextStore.getStore();
@@ -137,12 +198,12 @@ export function installRunIdForwarding(instance: AxiosInstance): void {
       // Phase 7b — content-control's own attachRunContext reads this the same way it reads
       // x-docgen-capture-mode, so docType survives the hop into the next process.
       if (store.docType) {
-        (config.headers as Record<string, string>)['x-docgen-doc-type'] = store.docType;
+        (config.headers as Record<string, string>)['x-docgen-doc-type'] = toHeaderValue(store.docType);
       }
       // Phase 7c — project is set by DocumentsGeneratorController.createRunRecord after the
       // store is already open; it's available by the time any outbound call is made.
       if (store.project) {
-        (config.headers as Record<string, string>)['x-docgen-project'] = store.project;
+        (config.headers as Record<string, string>)['x-docgen-project'] = toHeaderValue(store.project);
       }
     }
     return config;

@@ -19,6 +19,7 @@ const RETAIN_PENDING_GRACE_MS = 10 * 60 * 1000;
 import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
 import { resolveDocType } from '../helpers/runDocType';
 import { authorizeCaptureMode } from '../helpers/diagnostics/captureAuthorization';
+import { assertTemplateExists } from '../helpers/templatePreflight';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
@@ -34,6 +35,9 @@ export class DocumentsGeneratorController {
         // Before the run record, so the record (and every later log) reflects the effective mode.
         await authorizeCaptureMode(runContext, documentRequest.tfsCollectionUri, documentRequest.PAT);
         await this.createRunRecord(runContext, startedAt, documentRequest);
+        // After the run record, so a missing template is recorded on the run; before any data
+        // is fetched, so it fails in seconds instead of after the whole generation.
+        await assertTemplateExists(documentRequest.templateFile);
         const jsonDocumentGenerator: JSONDocumentGenerator = new JSONDocumentGenerator();
 
         try {
@@ -226,6 +230,7 @@ export class DocumentsGeneratorController {
         project: documentRequest.teamProjectName,
         docType,
         captureMode: runContext.captureMode,
+        sessionId: runContext.sessionId,
         templateName: documentRequest.templateFile,
         expiresAt: new Date(startedAt.getTime() + DOCUMENT_RUN_RETENTION_MS),
       });
