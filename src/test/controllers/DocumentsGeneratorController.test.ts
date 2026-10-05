@@ -708,6 +708,30 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
     expect(genMock.generateContentControls).not.toHaveBeenCalled();
   });
 
+  test('a repeated request for a run id that is already recorded is rejected without generating again', async () => {
+    mockCreate.mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }));
+    const res = buildRes();
+    const err: any = await runContextStore
+      .run({ runId: 'run-dup' }, () => controller.createJSONDoc(makeReq(), res))
+      .catch((e: any) => e);
+    expect(err).toMatchObject({ statusCode: 409, code: 'DUPLICATE_RUN' });
+    expect(err.message).toContain('run-dup');
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(genMock.generateContentControls).not.toHaveBeenCalled();
+    // The original run is still in flight: the duplicate must not mark it failed.
+    expect(DocumentRun.updateOne).not.toHaveBeenCalled();
+  });
+
+  test('a non-duplicate failure to record the run does not stop generation', async () => {
+    mockCreate.mockRejectedValueOnce(new Error('mongo down'));
+    const res = buildRes();
+    const result = await runContextStore.run({ runId: 'run-mongo-err' }, () =>
+      controller.createJSONDoc(makeReq(), res)
+    );
+    expect(result).toEqual({ url: 'http://doc' });
+    expect(genMock.generateContentControls).toHaveBeenCalledTimes(1);
+  });
+
   test('stores the curated input on the run when it starts', async () => {
     await runContextStore.run({ runId: 'run-input' }, () =>
       controller.createJSONDoc(

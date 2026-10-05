@@ -35,7 +35,18 @@ export class DocumentsGeneratorController {
         this.normalizeBucket(documentRequest);
         // Before the run record, so the record (and every later log) reflects the effective mode.
         await authorizeCaptureMode(runContext, documentRequest.tfsCollectionUri, documentRequest.PAT);
-        await this.createRunRecord(runContext, startedAt, documentRequest);
+        const runRecord = await this.createRunRecord(runContext, startedAt, documentRequest);
+        if (runRecord === 'duplicate') {
+          // The same run id is already being (or was) generated: a client retried the request. Do
+          // not start a second generation — two would race on the same output file and double the
+          // load — and return before the catch below, which would mark the original run failed.
+          const duplicate: any = new Error(
+            `A document generation with this run id was already started (run ${runContext?.runId}); it was not started again.`
+          );
+          duplicate.statusCode = 409;
+          duplicate.code = 'DUPLICATE_RUN';
+          return reject(duplicate);
+        }
         // Recorded now, not after content generation: a run that fails early (template, doc
         // template, a content control's fetch) must still say what it was asked to do.
         manifest.inputs = buildInputs(documentRequest);
@@ -217,7 +228,7 @@ export class DocumentsGeneratorController {
     runContext: RunContext | undefined,
     startedAt: Date,
     documentRequest: DocumentRequest
-  ): Promise<void> {
+  ): Promise<'created' | 'duplicate' | 'skipped'> {
     const docType = resolveDocType(documentRequest);
     // Set before the Mongo/runId guard below so every log emitted for this request — including
     // ones from a run that never gets a DocumentRun record (no runId, or Mongo down) — still
@@ -227,7 +238,7 @@ export class DocumentsGeneratorController {
       runContext.docType = docType;
       runContext.project = documentRequest.teamProjectName;
     }
-    if (!runContext?.runId || !isMongoConnected()) return;
+    if (!runContext?.runId || !isMongoConnected()) return 'skipped';
     try {
       await DocumentRun.create({
         runId: runContext.runId,
@@ -243,9 +254,15 @@ export class DocumentsGeneratorController {
         templateName: documentRequest.templateFile,
         expiresAt: new Date(startedAt.getTime() + DOCUMENT_RUN_RETENTION_MS),
       });
-    } catch (err) {
+      return 'created';
+    } catch (err: any) {
+      if (err?.code === 11000) {
+        logger.warn(`Run ${runContext.runId} is already recorded; rejecting the repeated request`);
+        return 'duplicate';
+      }
       // Monitoring must never break generation — see Phase 6's transport safety rules.
       logger.warn('Failed to create DocumentRun record', err);
+      return 'skipped';
     }
   }
 
