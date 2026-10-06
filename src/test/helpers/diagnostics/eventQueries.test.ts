@@ -20,6 +20,7 @@ import {
   getEventHistogram,
   insertedAfterCondition,
   INSERTED_AFTER_OVERLAP_SECONDS,
+  BEHIND_COUNT_CAP,
 } from '../../../helpers/diagnostics/eventQueries';
 
 function chainable(result: any[]) {
@@ -319,5 +320,76 @@ describe('getEventHistogram', () => {
     const buckets = await getEventHistogram({}, 24);
 
     expect(buckets.every((b) => Object.keys(b.counts).length === 0)).toBe(true);
+  });
+});
+
+describe('listEvents tail mode (live tail by cursor)', () => {
+  const id = (n: number) => n.toString(16).padStart(24, '0');
+  const doc = (n: number) => ({ _id: id(n), ts: new Date(1000 * n), message: `m${n}` });
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  test('reads in insertion order, strictly after afterId, and says it is tail mode', async () => {
+    const chain = chainable([doc(5), doc(6)]);
+    mockFind.mockReturnValue(chain);
+    const r: any = await listEvents({ filters: { level: ['error'] }, tail: true, afterId: id(4), limit: 200 });
+    expect(chain.sort).toHaveBeenCalledWith({ _id: 1 });
+    expect(chain.limit).toHaveBeenCalledWith(201);
+    const match = mockFind.mock.calls[0][0];
+    expect(match.$and[0]).toEqual({ level: { $in: ['error'] } });
+    expect(String(match.$and[1]._id.$gt)).toBe(id(4));
+    expect(r).toMatchObject({ tail: true, behind: 0 });
+    expect(r.events).toHaveLength(2);
+    expect(mockCountDocuments).not.toHaveBeenCalled();
+  });
+
+  test('a full page reports how many events are still waiting after it', async () => {
+    const docs = Array.from({ length: 4 }, (_, i) => doc(i + 1)); // limit 3 -> 4th is the "one more"
+    mockFind.mockReturnValue(chainable(docs));
+    const limit = jest.fn().mockResolvedValue(72);
+    mockCountDocuments.mockReturnValue({ limit });
+    const r: any = await listEvents({ filters: {}, tail: true, afterId: id(0), limit: 3 });
+    expect(r.events.map((e: any) => e._id)).toEqual([id(1), id(2), id(3)]);
+    expect(r.behind).toBe(72);
+    expect(r.behindCapped).toBe(false);
+    const counted = mockCountDocuments.mock.calls[0][0];
+    expect(String(counted._id.$gt)).toBe(id(3));
+    // The count is bounded, whatever the filters are.
+    expect(limit).toHaveBeenCalledWith(BEHIND_COUNT_CAP);
+  });
+
+  test('a backlog at or past the cap is reported as capped', async () => {
+    mockFind.mockReturnValue(chainable([doc(1), doc(2), doc(3), doc(4)]));
+    mockCountDocuments.mockReturnValue({ limit: jest.fn().mockResolvedValue(BEHIND_COUNT_CAP) });
+    const r: any = await listEvents({ filters: {}, tail: true, afterId: id(0), limit: 3 });
+    expect(r).toMatchObject({ behind: BEHIND_COUNT_CAP, behindCapped: true });
+  });
+
+  test('a page that reached the end counts nothing and is not capped', async () => {
+    mockFind.mockReturnValue(chainable([doc(1), doc(2)]));
+    const r: any = await listEvents({ filters: {}, tail: true, afterId: id(0), limit: 3 });
+    expect(r).toMatchObject({ behind: 0, behindCapped: false });
+  });
+
+  test('without afterId it starts from insertedAfter with the overlap', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    await listEvents({ filters: {}, tail: true, insertedAfter: new Date('2026-10-05T10:00:10Z') });
+    const match = mockFind.mock.calls[0][0];
+    expect(match._id.$gte).toBeDefined();
+    expect(match._id.$gt).toBeUndefined();
+  });
+
+  test('a malformed afterId is ignored (falls back to insertedAfter), never queried', async () => {
+    mockFind.mockReturnValue(chainable([]));
+    await listEvents({ filters: {}, tail: true, afterId: 'not-an-id', insertedAfter: new Date('2026-10-05T10:00:10Z') });
+    const match = mockFind.mock.calls[0][0];
+    expect(match._id.$gte).toBeDefined();
+  });
+
+  test('without tail the old behaviour is untouched', async () => {
+    const chain = chainable([]);
+    mockFind.mockReturnValue(chain);
+    const r: any = await listEvents({ filters: {} });
+    expect(chain.sort).toHaveBeenCalledWith({ ts: -1, _id: -1 });
+    expect(r.tail).toBeUndefined();
   });
 });

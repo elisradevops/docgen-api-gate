@@ -253,6 +253,15 @@ describe('DiagnosticsQueryController', () => {
       expect(mockListEvents.mock.calls[0][0].insertedAfter).toBeUndefined();
     });
 
+    test('passes tail and afterId through; tail is only on for the literal "true"', async () => {
+      mockListEvents.mockResolvedValue({ events: [], tail: true, behind: 0 });
+      await controller.listEvents({ query: { tail: 'true', afterId: '65f0a1b2c3d4e5f6a7b8c9d0' } } as any, buildRes());
+      expect(mockListEvents.mock.calls[0][0]).toMatchObject({ tail: true, afterId: '65f0a1b2c3d4e5f6a7b8c9d0' });
+      mockListEvents.mockClear();
+      await controller.listEvents({ query: { tail: 'yes' } } as any, buildRes());
+      expect(mockListEvents.mock.calls[0][0]).toMatchObject({ tail: false, afterId: undefined });
+    });
+
     test('narrows the window to 7 days for a service/level sort and says so in the response', async () => {
       mockListEvents.mockResolvedValue({ events: [] });
       const res: any = buildRes();
