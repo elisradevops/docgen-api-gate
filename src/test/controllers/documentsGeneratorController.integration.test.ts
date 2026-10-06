@@ -24,6 +24,15 @@ jest.mock('../../helpers/JsonDocGenerators/JsonDocumentGenerator', () => ({
   JSONDocumentGenerator: jest.fn().mockImplementation(() => genMock),
 }));
 
+// This request has no run id of its own, so it would be captured in detail by default, which adds a
+// credential check to the mocked axios sequence below. That default has its own tests; switch it off here.
+beforeAll(() => {
+  process.env.HEADLESS_CAPTURE_MODE = 'normal';
+});
+afterAll(() => {
+  delete process.env.HEADLESS_CAPTURE_MODE;
+});
+
 describe('DocumentsGeneratorController HTTP integration', () => {
   beforeEach(() => {
     jest.clearAllMocks();

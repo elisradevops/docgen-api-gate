@@ -8,6 +8,7 @@
 import { IDocumentRun } from '../../models/DocumentRun';
 import { TimelineEntry } from './runDetail';
 import { ManifestDiff, DiffRow } from './manifestDiff';
+import { buildCompareFindings } from './compareFindings';
 
 function paragraph(text: string, headingLevel = 0): Record<string, unknown> {
   return { type: 'paragraph', headingLevel, runs: [{ text }] };
@@ -242,6 +243,11 @@ export function buildCompareReportContentControls(runA: IDocumentRun, runB: IDoc
   const wordObjects: Record<string, unknown>[] = [
     paragraph(`Diagnostics comparison — ${runA.runId} vs ${runB.runId}`, 1),
     ...(diff.crossType ? [paragraph('Comparing runs of different document types / projects — results may reflect expected differences, not a defect.')] : []),
+    // The first thing a reader should see: where the runs diverge first, and what has been ruled out.
+    paragraph('Findings', 1),
+    ...buildCompareFindings(runA, runB, diff).map((f) =>
+      paragraph(`${f.severity === 'severe' ? '[!] ' : '- '}${f.text}`)
+    ),
   ];
   (Object.keys(BAND_TITLES) as Array<keyof ManifestDiff['bands']>).forEach((band) => {
     const rows = diff.bands[band];

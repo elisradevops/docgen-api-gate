@@ -6,7 +6,11 @@ jest.mock('../../../util/logger', () => ({
 
 import axios from 'axios';
 import logger from '../../../util/logger';
-import { authorizeCaptureMode, clearCaptureAuthorizationCache } from '../../../helpers/diagnostics/captureAuthorization';
+import {
+  authorizeCaptureMode,
+  clearCaptureAuthorizationCache,
+  identityKindFromConnectionData,
+} from '../../../helpers/diagnostics/captureAuthorization';
 import type { RunContext } from '../../../util/runContext';
 
 const mockPost = axios.post as jest.Mock;
@@ -74,5 +78,47 @@ describe('authorizeCaptureMode', () => {
 
   test('is a no-op without a run context', async () => {
     await expect(authorizeCaptureMode(undefined, 'https://org', 'pat')).resolves.toBeUndefined();
+  });
+
+  describe('identity class of the credential', () => {
+    const connectionData = (authenticatedUser: unknown) => ({ data: { valid: true, data: { authenticatedUser } } });
+
+    test('records a build service identity from the same check, class only', async () => {
+      mockPost.mockResolvedValue(
+        connectionData({ providerDisplayName: 'Project Collection Build Service (Org)', descriptor: 'Microsoft.TeamFoundation.ServiceIdentity;abc' })
+      );
+      const c = ctx();
+      await authorizeCaptureMode(c, 'https://org', 'pat');
+      expect(c.identityKind).toBe('build-service');
+      expect(JSON.stringify(c)).not.toContain('Build Service');
+    });
+
+    test('records a person as "user"', async () => {
+      mockPost.mockResolvedValue(connectionData({ providerDisplayName: 'Jane Doe', descriptor: 'aad.abc' }));
+      const c = ctx();
+      await authorizeCaptureMode(c, 'https://org', 'pat');
+      expect(c.identityKind).toBe('user');
+    });
+
+    test('is "unknown" when the response says nothing about the identity', async () => {
+      const c = ctx();
+      await authorizeCaptureMode(c, 'https://org', 'pat'); // beforeEach: { data: { valid: true } }
+      expect(c.identityKind).toBe('unknown');
+    });
+
+    test('a cached validation still reports the identity class, without a second call', async () => {
+      mockPost.mockResolvedValue(connectionData({ descriptor: 'Microsoft.TeamFoundation.ServiceIdentity;abc' }));
+      await authorizeCaptureMode(ctx(), 'https://org', 'pat');
+      const second = ctx();
+      await authorizeCaptureMode(second, 'https://org', 'pat');
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      expect(second.identityKind).toBe('build-service');
+    });
+
+    test('identityKindFromConnectionData tolerates anything', () => {
+      expect(identityKindFromConnectionData(undefined)).toBe('unknown');
+      expect(identityKindFromConnectionData({ authenticatedUser: 'x' })).toBe('unknown');
+      expect(identityKindFromConnectionData({ authenticatedUser: { customDisplayName: 'Build Service' } })).toBe('build-service');
+    });
   });
 });

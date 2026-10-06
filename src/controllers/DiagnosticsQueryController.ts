@@ -12,6 +12,7 @@ import { listEvents, getEventFacets, getEventHistogram, EventFilters, SortField,
 import { LOG_EVENT_RETENTION_MS } from '../models/LogEvent';
 import { getRunDetail } from '../helpers/diagnostics/runDetail';
 import { diffManifests, findBaselineRun } from '../helpers/diagnostics/manifestDiff';
+import { buildCompareFindings } from '../helpers/diagnostics/compareFindings';
 import { buildRunReportContentControls, buildCompareReportContentControls } from '../helpers/diagnostics/reportContent';
 import logger from '../util/logger';
 
@@ -215,7 +216,8 @@ export class DiagnosticsQueryController {
         res.status(404).json({ message: 'One or both runs not found', error: 'run_not_found' });
         return;
       }
-      res.status(200).json(diffManifests(detailA.run, detailB.run));
+      const diff = diffManifests(detailA.run, detailB.run);
+      res.status(200).json({ ...diff, findings: buildCompareFindings(detailA.run, detailB.run, diff) });
     } catch (err) {
       res.status(500).json({ message: 'Failed to compare runs', error: String(err) });
     }

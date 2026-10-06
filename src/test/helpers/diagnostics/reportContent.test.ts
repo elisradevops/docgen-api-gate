@@ -58,6 +58,33 @@ describe('buildCompareReportContentControls', () => {
     expect(cc.title).toBe('diagnostics-compare-report');
   });
 
+  test('puts the findings ahead of every band, so the first thing read says where the runs diverge', () => {
+    const a = run({ runId: 'a', trigger: 'pipeline' });
+    const b = run({ runId: 'b', trigger: 'ui' });
+    const diff: ManifestDiff = {
+      crossType: false,
+      bands: {
+        outcomes: [],
+        volumes: [
+          { field: 'svd.emptyResult', a: true, b: false, severity: 'moderate' },
+          { field: 'svd.funnel.linkedChanges', a: 0, b: 37, severity: 'moderate' },
+        ],
+        environment: [],
+        inputs: [],
+        unchanged: [],
+      },
+    };
+    const [cc] = buildCompareReportContentControls(a, b, diff);
+    const text = (cc.wordObjects as any[]).map((o) => JSON.stringify(o));
+
+    const findingsAt = text.findIndex((t) => t.includes('"Findings"'));
+    const firstBandAt = text.findIndex((t) => t.includes('Changed outcomes') || t.includes('Volume'));
+    expect(findingsAt).toBeGreaterThan(-1);
+    expect(findingsAt).toBeLessThan(firstBandAt === -1 ? Infinity : firstBandAt);
+    expect(text.join('')).toContain('The counts first diverge at');
+    expect(text.join('')).toContain('Run A was started by a pipeline, run B by the UI.');
+  });
+
   test('includes the cross-type warning paragraph only when crossType is true', () => {
     const withCross = buildCompareReportContentControls(run(), run(), { ...emptyDiff, crossType: true });
     const withoutCross = buildCompareReportContentControls(run(), run(), emptyDiff);

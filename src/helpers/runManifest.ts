@@ -14,7 +14,10 @@ export interface ContentControlVersions {
 
 // Config flags that can affect generated output, not every env var — this is diagnostic
 // context for a run, not a full environment dump.
-export function buildEnvironment(contentControlVersions?: ContentControlVersions) {
+export function buildEnvironment(
+  contentControlVersions?: ContentControlVersions,
+  credential?: { kind?: string; identity?: string }
+) {
   return {
     services: {
       'dg-api-gate': readOwnVersion(),
@@ -28,6 +31,11 @@ export function buildEnvironment(contentControlVersions?: ContentControlVersions
       LOG_FORMAT: process.env.LOG_FORMAT || 'text',
       LOG_LEVEL: process.env.LOG_LEVEL || 'info',
     },
+    // Which kind of credential ran this (never the credential): the usual reason one run sees data
+    // that another, with the same request, does not.
+    ...(credential && (credential.kind || credential.identity)
+      ? { credential: { kind: credential.kind, identity: credential.identity } }
+      : {}),
   };
 }
 
