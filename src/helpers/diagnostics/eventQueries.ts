@@ -143,7 +143,17 @@ function parseObjectId(raw?: string): mongoose.Types.ObjectId | undefined {
   return typeof raw === 'string' && /^[0-9a-fA-F]{24}$/.test(raw) ? new mongoose.Types.ObjectId(raw) : undefined;
 }
 
-// Tail mode of listEvents: see ListEventsParams.tail. The filters still apply; sort is `_id` ascending
+// How far the "events still waiting" count goes: past it the answer is "at least this many" (`behindCapped`).
+// The count runs on every full page of a drain, so it must stay cheap whatever the filters are.
+export const BEHIND_COUNT_CAP = 10000;
+
+// Tail mode of listEvents: see ListEventsParams.tail.
+//
+// ObjectIds are ordered by creation second and then by a per-process random value and counter, so events
+// inserted in the same second by DIFFERENT api-gate processes are not ordered by arrival. The strict cursor
+// (`_id > afterId`) is used only to drain a burst; once caught up the client goes back to a look-back by time
+// (`insertedAfter`, with INSERTED_AFTER_OVERLAP_SECONDS of overlap), which re-reads the last seconds and so
+// also picks up such late arrivals. With a single api-gate process the cursor alone is exact. The filters still apply; sort is `_id` ascending
 // (insertion order), which the default `_id` index serves, so it needs no extra index.
 async function listTail(params: ListEventsParams, base: Record<string, unknown>, limit: number) {
   const afterId = parseObjectId(params.afterId);
@@ -159,9 +169,16 @@ async function listTail(params: ListEventsParams, base: Record<string, unknown>,
   if (hasMore) {
     const after = { _id: { $gt: (page[page.length - 1] as any)._id } };
     const counted = Object.keys(base).length > 0 ? { $and: [base, after] } : after;
-    behind = await LogEvent.countDocuments(counted);
+    behind = await LogEvent.countDocuments(counted).limit(BEHIND_COUNT_CAP);
   }
-  return { events: page, nextCursor: undefined, matchedCount: undefined, tail: true as const, behind };
+  return {
+    events: page,
+    nextCursor: undefined,
+    matchedCount: undefined,
+    tail: true as const,
+    behind,
+    behindCapped: behind >= BEHIND_COUNT_CAP,
+  };
 }
 
 export async function listEvents(params: ListEventsParams) {

@@ -20,6 +20,7 @@ import {
   getEventHistogram,
   insertedAfterCondition,
   INSERTED_AFTER_OVERLAP_SECONDS,
+  BEHIND_COUNT_CAP,
 } from '../../../helpers/diagnostics/eventQueries';
 
 function chainable(result: any[]) {
@@ -344,12 +345,29 @@ describe('listEvents tail mode (live tail by cursor)', () => {
   test('a full page reports how many events are still waiting after it', async () => {
     const docs = Array.from({ length: 4 }, (_, i) => doc(i + 1)); // limit 3 -> 4th is the "one more"
     mockFind.mockReturnValue(chainable(docs));
-    mockCountDocuments.mockResolvedValue(72);
+    const limit = jest.fn().mockResolvedValue(72);
+    mockCountDocuments.mockReturnValue({ limit });
     const r: any = await listEvents({ filters: {}, tail: true, afterId: id(0), limit: 3 });
     expect(r.events.map((e: any) => e._id)).toEqual([id(1), id(2), id(3)]);
     expect(r.behind).toBe(72);
+    expect(r.behindCapped).toBe(false);
     const counted = mockCountDocuments.mock.calls[0][0];
     expect(String(counted._id.$gt)).toBe(id(3));
+    // The count is bounded, whatever the filters are.
+    expect(limit).toHaveBeenCalledWith(BEHIND_COUNT_CAP);
+  });
+
+  test('a backlog at or past the cap is reported as capped', async () => {
+    mockFind.mockReturnValue(chainable([doc(1), doc(2), doc(3), doc(4)]));
+    mockCountDocuments.mockReturnValue({ limit: jest.fn().mockResolvedValue(BEHIND_COUNT_CAP) });
+    const r: any = await listEvents({ filters: {}, tail: true, afterId: id(0), limit: 3 });
+    expect(r).toMatchObject({ behind: BEHIND_COUNT_CAP, behindCapped: true });
+  });
+
+  test('a page that reached the end counts nothing and is not capped', async () => {
+    mockFind.mockReturnValue(chainable([doc(1), doc(2)]));
+    const r: any = await listEvents({ filters: {}, tail: true, afterId: id(0), limit: 3 });
+    expect(r).toMatchObject({ behind: 0, behindCapped: false });
   });
 
   test('without afterId it starts from insertedAfter with the overlap', async () => {
