@@ -1,6 +1,8 @@
 // Backs GET /diagnostics/compare (Phase 7c) — one generic tree diff over
 // environment/inputs/steps/artifacts, per the master plan's explicit design: no per-doc-type
 // comparison code, so a new document type gets comparison for free.
+import { buildEffectiveInputs } from './effectiveInputs';
+
 import { DocumentRun, IDocumentRun, IDocumentRunManifestStep } from '../../models/DocumentRun';
 
 export type DiffSeverity = 'severe' | 'moderate' | 'info';
@@ -172,7 +174,13 @@ export function diffManifests(runA: IDocumentRun, runB: IDocumentRun): ManifestD
   bands.environment.push(...envDiff.changed);
   bands.unchanged.push(...envDiff.unchanged);
 
-  const inputsDiff = diffTree(runA.manifest?.inputs, runB.manifest?.inputs, 'info');
+  // Compared as they effectively ran: auto-discovered versions filled in, so the same versions reached by
+  // different routes are not reported as different inputs.
+  const inputsDiff = diffTree(
+    buildEffectiveInputs(runA.manifest?.inputs, (runA.manifest?.inputs as any)?.resolvedRange).inputs,
+    buildEffectiveInputs(runB.manifest?.inputs, (runB.manifest?.inputs as any)?.resolvedRange).inputs,
+    'info'
+  );
   bands.inputs.push(...inputsDiff.changed);
   bands.unchanged.push(...inputsDiff.unchanged);
 

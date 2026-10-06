@@ -28,8 +28,10 @@ export interface IDocumentRunManifest {
     services?: Record<string, string>;
     packages?: Record<string, string>;
     flags?: Record<string, string>;
-    // Which kind of credential ran the request and which class of identity it belongs to; never the credential.
-    credential?: { kind?: string; identity?: string };
+    // Which kind of credential ran the request, which class of identity it belongs to, that identity's
+    // display name, and what it could see in the project (counts and denied/notFound per area). Never the
+    // credential itself.
+    credential?: { kind?: string; identity?: string; name?: string; access?: Record<string, unknown> };
   };
   inputs?: Record<string, unknown>;
   steps: IDocumentRunManifestStep[];

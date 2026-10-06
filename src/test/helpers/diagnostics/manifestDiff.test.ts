@@ -173,3 +173,29 @@ describe('findBaselineRun', () => {
     expect(await findBaselineRun(run())).toBeUndefined();
   });
 });
+
+describe('diffManifests — effective inputs', () => {
+  const svdInputs = (data: any, resolvedRange: any) => ({
+    contentControls: [{ title: 'SVD', data: { rangeType: 'release', repoId: 7, ...data } }],
+    resolvedRange,
+  });
+  const range = (fromSource: string) => ({
+    rangeType: 'release',
+    definition: { id: 7 },
+    from: { id: 11, source: fromSource },
+    to: { id: 12, source: fromSource },
+  });
+
+  test('the same versions discovered (Auto) and given are not reported as different inputs', () => {
+    const auto = run({ manifest: { steps: [], environment: {}, inputs: svdInputs({ from: 0, to: 0 }, range('auto')) } });
+    const manual = run({ runId: 'run-b', manifest: { steps: [], environment: {}, inputs: svdInputs({ from: 11, to: 12 }, range('explicit')) } });
+    const diff = diffManifests(auto, manual);
+    expect(diff.bands.inputs.filter((r) => /contentControls/.test(r.field))).toEqual([]);
+  });
+
+  test('different versions still differ', () => {
+    const auto = run({ manifest: { steps: [], environment: {}, inputs: svdInputs({ from: 0, to: 0 }, range('auto')) } });
+    const manual = run({ runId: 'run-b', manifest: { steps: [], environment: {}, inputs: svdInputs({ from: 9, to: 12 }, range('explicit')) } });
+    expect(diffManifests(auto, manual).bands.inputs.some((r) => /from/.test(r.field))).toBe(true);
+  });
+});

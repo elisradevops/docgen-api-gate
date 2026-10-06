@@ -301,6 +301,24 @@ describe('detailed capture by default for runs that do not come from the UI', ()
     expect(requested({})).toBeUndefined();
   });
 
+  test('the default is flagged as such (headlessDefault) so it can be treated quietly; asked-for capture is not', () => {
+    delete process.env.HEADLESS_CAPTURE_MODE;
+    const flagFor = (headers: Record<string, string>, path = '/jsonDocument/create') => {
+      let store: any;
+      attachRunContext(fakeReq(headers, path), fakeRes(), () => {
+        store = runContextStore.getStore();
+      });
+      return store.headlessDefault;
+    };
+
+    expect(flagFor({})).toBe(true);
+    expect(flagFor({ 'x-docgen-capture-mode': 'verbose' })).toBeUndefined(); // the caller asked
+    expect(flagFor({ 'x-docgen-run-id': 'abc-123' })).toBeUndefined(); // a UI run
+    expect(flagFor({}, '/azure/tests/plans')).toBeUndefined(); // not a generation
+    process.env.HEADLESS_CAPTURE_MODE = 'normal';
+    expect(flagFor({})).toBeUndefined(); // default switched off
+  });
+
   test('an unrecognised value falls back to verbose rather than silently turning capture off', () => {
     process.env.HEADLESS_CAPTURE_MODE = 'verbos';
     expect(requested({})).toBe('verbose');

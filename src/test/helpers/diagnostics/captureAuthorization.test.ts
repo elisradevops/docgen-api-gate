@@ -121,4 +121,62 @@ describe('authorizeCaptureMode', () => {
       expect(identityKindFromConnectionData({ authenticatedUser: { customDisplayName: 'Build Service' } })).toBe('build-service');
     });
   });
+
+  describe('a headless-default request (nobody asked for capture)', () => {
+    const headless = (over: Partial<RunContext> = {}) => ctx({ headlessDefault: true, ...over });
+
+    test('a failed check is a debug line, not a warning', async () => {
+      mockPost.mockRejectedValue(new Error('timeout of 3000ms exceeded'));
+      const c = headless();
+
+      await authorizeCaptureMode(c, 'https://org', 'pat');
+
+      expect(c.captureMode).toBeUndefined();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('could not be validated'));
+    });
+
+    test('uses a shorter bound than an explicit request', async () => {
+      await authorizeCaptureMode(headless(), 'https://org', 'pat');
+      await authorizeCaptureMode(ctx(), 'https://org', 'another-pat');
+
+      expect(mockPost.mock.calls[0][2].timeout).toBeLessThan(mockPost.mock.calls[1][2].timeout);
+    });
+
+    test('remembers a failed check for a minute, so a pipeline does not wait on every run', async () => {
+      mockPost.mockRejectedValue(new Error('down'));
+
+      await authorizeCaptureMode(headless(), 'https://org', 'pat');
+      await authorizeCaptureMode(headless(), 'https://org', 'pat');
+      await authorizeCaptureMode(headless(), 'https://org', 'other-pat');
+
+      expect(mockPost).toHaveBeenCalledTimes(2); // the second 'pat' request made no call; 'other-pat' is a new credential
+    });
+
+    test('missing credentials are a debug line too', async () => {
+      await authorizeCaptureMode(headless(), undefined, undefined);
+
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('without ADO credentials'));
+    });
+
+    test('a successful check still activates the mode', async () => {
+      const c = headless();
+
+      await authorizeCaptureMode(c, 'https://org', 'pat');
+
+      expect(c.captureMode).toBe('verbose');
+    });
+  });
+
+  test('an explicit request keeps warning on a failed check, and is not remembered as failed', async () => {
+    mockPost.mockRejectedValue(new Error('down'));
+
+    await authorizeCaptureMode(ctx(), 'https://org', 'pat');
+    await authorizeCaptureMode(ctx(), 'https://org', 'pat');
+
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(mockPost).toHaveBeenCalledTimes(2);
+  });
 });
+
