@@ -137,7 +137,7 @@ describe('GET /diagnostics/overview, /diagnostics/issues, /diagnostics/issues/:i
   test('GET /diagnostics/events is reachable with no session and returns {events, nextCursor}', async () => {
     const app = createApp();
     const res = await withLocalAgent(app, (agent) => agent.get('/diagnostics/events').expect(200));
-    expect(res.body).toEqual({ events: [], nextCursor: undefined });
+    expect(res.body).toEqual({ events: [], serverTime: expect.any(String) });
   });
 
   test('GET /diagnostics/events returns 503 without querying when Mongo is disconnected', async () => {

@@ -18,7 +18,9 @@ import { computeSignature } from '../../helpers/diagnostics/signature';
 import { upsertIssuesForEvents } from '../../helpers/diagnostics/issueUpsert';
 import { sanitizeEvent } from '../../helpers/diagnostics/sanitizeEvent';
 
-const FLUSH_INTERVAL_MS = Number(process.env.DIAGNOSTICS_FLUSH_INTERVAL_MS) || 2000;
+// Half a second, not two: this is half of what a live-tail viewer waits for an event (the other
+// halves are the relaying service's own flush and the UI's poll). Size-triggered flushes are unchanged.
+const FLUSH_INTERVAL_MS = Number(process.env.DIAGNOSTICS_FLUSH_INTERVAL_MS) || 500;
 const FLUSH_BATCH_SIZE = Number(process.env.DIAGNOSTICS_FLUSH_BATCH_SIZE) || 500;
 const BUFFER_MAX = Number(process.env.DIAGNOSTICS_BUFFER_MAX) || 10_000;
 // Dropping one event at a time with shift() is O(n) per push once the buffer is full; dropping

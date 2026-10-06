@@ -238,6 +238,21 @@ describe('DiagnosticsQueryController', () => {
       expect(mockListEvents).toHaveBeenCalledWith(expect.objectContaining({ includeCount: false }));
     });
 
+    test('passes insertedAfter through (valid ISO only) and always returns serverTime', async () => {
+      mockListEvents.mockResolvedValue({ events: [] });
+      const res: any = buildRes();
+      await controller.listEvents({ query: { insertedAfter: '2026-10-05T10:00:10.000Z' } } as any, res);
+      expect(mockListEvents.mock.calls[0][0].insertedAfter).toEqual(new Date('2026-10-05T10:00:10.000Z'));
+      expect(Number.isNaN(Date.parse(res.body.serverTime))).toBe(false);
+
+      mockListEvents.mockClear();
+      await controller.listEvents({ query: { insertedAfter: 'garbage' } } as any, buildRes());
+      expect(mockListEvents.mock.calls[0][0].insertedAfter).toBeUndefined();
+      mockListEvents.mockClear();
+      await controller.listEvents({ query: {} } as any, buildRes());
+      expect(mockListEvents.mock.calls[0][0].insertedAfter).toBeUndefined();
+    });
+
     test('narrows the window to 7 days for a service/level sort and says so in the response', async () => {
       mockListEvents.mockResolvedValue({ events: [] });
       const res: any = buildRes();
@@ -265,13 +280,13 @@ describe('DiagnosticsQueryController', () => {
       expect(filters.since.getTime()).toBeGreaterThan(new Date('2000-01-01').getTime());
     });
 
-    test('returns the {events, nextCursor} shape verbatim', async () => {
+    test('returns the {events, nextCursor} shape, plus the server clock', async () => {
       mockListEvents.mockResolvedValue({ events: [{ _id: '1' }], nextCursor: 'xyz' });
       const res = buildRes();
 
       await controller.listEvents({ query: {} } as any, res);
 
-      expect(res.body).toEqual({ events: [{ _id: '1' }], nextCursor: 'xyz' });
+      expect(res.body).toEqual({ events: [{ _id: '1' }], nextCursor: 'xyz', serverTime: expect.any(String) });
     });
 
     test('returns 500 on an unexpected failure', async () => {
