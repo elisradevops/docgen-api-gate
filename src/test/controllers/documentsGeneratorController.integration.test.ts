@@ -28,9 +28,11 @@ jest.mock('../../helpers/JsonDocGenerators/JsonDocumentGenerator', () => ({
 // credential check to the mocked axios sequence below. That default has its own tests; switch it off here.
 beforeAll(() => {
   process.env.HEADLESS_CAPTURE_MODE = 'normal';
+  process.env.ACCESS_PROBE = 'off'; // one more axios.post per run, which this sequence does not expect
 });
 afterAll(() => {
   delete process.env.HEADLESS_CAPTURE_MODE;
+  delete process.env.ACCESS_PROBE;
 });
 
 describe('DocumentsGeneratorController HTTP integration', () => {

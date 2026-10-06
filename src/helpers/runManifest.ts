@@ -16,7 +16,7 @@ export interface ContentControlVersions {
 // context for a run, not a full environment dump.
 export function buildEnvironment(
   contentControlVersions?: ContentControlVersions,
-  credential?: { kind?: string; identity?: string }
+  credential?: { kind?: string; identity?: string; name?: string; access?: Record<string, unknown> }
 ) {
   return {
     services: {
@@ -34,7 +34,7 @@ export function buildEnvironment(
     // Which kind of credential ran this (never the credential): the usual reason one run sees data
     // that another, with the same request, does not.
     ...(credential && (credential.kind || credential.identity)
-      ? { credential: { kind: credential.kind, identity: credential.identity } }
+      ? { credential: { kind: credential.kind, identity: credential.identity, name: credential.name, access: credential.access } }
       : {}),
   };
 }

@@ -22,6 +22,10 @@ export interface RunContext {
   // later, by authorizeCaptureMode (helpers/diagnostics/captureAuthorization.ts), once the
   // request's ADO credentials have been verified.
   requestedCaptureMode?: 'verbose' | 'retain-on-failure';
+  // True when requestedCaptureMode came from the headless default (no client run id, no header), not from
+  // anything the caller asked for. authorizeCaptureMode treats such a request quietly: nobody asked for it,
+  // so a failed credential check is debug noise, not a warning, and is bounded and briefly remembered.
+  headlessDefault?: boolean;
   // The frontend's working session (ses-<uuid>): picker calls are logged under it as their run id
   // and the generation that follows records it on its DocumentRun, so the activity that led up to
   // a run can be shown with it. Only generation reads this.
@@ -146,9 +150,9 @@ export function attachRunContext(req: Request, res: Response, next: NextFunction
   const wasClientSupplied = typeof rawHeader === 'string' && RUN_ID_PATTERN.test(rawHeader);
   const runId = resolveRunId(rawHeader, isGenerationRequest(req) ? '' : REQUEST_ID_PREFIX);
   const generation = isGenerationRequest(req);
-  const requestedCaptureMode =
-    resolveCaptureMode(req.header('x-docgen-capture-mode')) ??
-    (generation && !wasClientSupplied ? resolveHeadlessCaptureMode() : undefined);
+  const headerCaptureMode = resolveCaptureMode(req.header('x-docgen-capture-mode'));
+  const defaultCaptureMode = headerCaptureMode === undefined && generation && !wasClientSupplied ? resolveHeadlessCaptureMode() : undefined;
+  const requestedCaptureMode = headerCaptureMode ?? defaultCaptureMode;
   // Echoed back so a pipeline caller that didn't send one can pick up the minted id (Phase 5).
   res.setHeader('x-docgen-run-id', runId);
   // For generation, project and doc type come from the request body (createRunRecord) — the
@@ -163,6 +167,7 @@ export function attachRunContext(req: Request, res: Response, next: NextFunction
       runId,
       trigger: wasClientSupplied ? 'ui' : 'pipeline',
       requestedCaptureMode,
+      headlessDefault: defaultCaptureMode !== undefined ? true : undefined,
       sessionId: resolveSessionId(req.header('x-docgen-session-id')),
       docType,
       project,

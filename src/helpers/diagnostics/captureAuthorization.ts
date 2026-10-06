@@ -14,6 +14,10 @@ import type { RunContext } from '../../util/runContext';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 500;
 const VALIDATION_TIMEOUT_MS = 10_000;
+// A request that did not ask for capture (the headless default) must not make a pipeline wait or log noise
+// when the check cannot succeed: a shorter bound, and a failed check is remembered for a minute.
+const HEADLESS_VALIDATION_TIMEOUT_MS = 3_000;
+const HEADLESS_FAILURE_TTL_MS = 60 * 1000;
 
 type IdentityKind = NonNullable<RunContext['identityKind']>;
 
@@ -43,8 +47,12 @@ export function identityKindFromConnectionData(connectionData: any): IdentityKin
   return 'user';
 }
 
+// sha256(orgUrl, PAT) -> until, for failed checks of headless-default requests only.
+const failedHeadless = new Map<string, number>();
+
 export function clearCaptureAuthorizationCache(): void {
   validated.clear();
+  failedHeadless.clear();
 }
 
 export async function authorizeCaptureMode(
@@ -54,20 +62,30 @@ export async function authorizeCaptureMode(
 ): Promise<void> {
   const requested = runContext?.requestedCaptureMode;
   if (!runContext || !requested) return;
+  // Nobody asked for capture on a headless-default request, so its problems are not warnings.
+  const quiet = runContext.headlessDefault === true;
+  const report = (message: string) => (quiet ? logger.debug(message) : logger.warn(message));
   try {
     if (!orgUrl || !pat) {
-      logger.warn('Verbose capture requested without ADO credentials; running in normal mode');
+      report('Verbose capture requested without ADO credentials; running in normal mode');
       return;
     }
     const key = createHash('sha256').update(`${orgUrl}\u0000${pat}`).digest('hex');
     const now = Date.now();
+    if (quiet && (failedHeadless.get(key) ?? 0) > now) return; // a check for these credentials failed a moment ago
     const cached = validated.get(key);
     if (cached === undefined || cached.until <= now) {
-      const response = await axios.post(
-        `${process.env.dgContentControlUrl}/azure/check-org-url`,
-        { orgUrl, token: pat },
-        { timeout: VALIDATION_TIMEOUT_MS }
-      );
+      let response;
+      try {
+        response = await axios.post(
+          `${process.env.dgContentControlUrl}/azure/check-org-url`,
+          { orgUrl, token: pat },
+          { timeout: quiet ? HEADLESS_VALIDATION_TIMEOUT_MS : VALIDATION_TIMEOUT_MS }
+        );
+      } catch (err) {
+        if (quiet) failedHeadless.set(key, now + HEADLESS_FAILURE_TTL_MS);
+        throw err;
+      }
       const identityKind = identityKindFromConnectionData(response?.data?.data);
       remember(key, now, identityKind);
       runContext.identityKind = identityKind;
@@ -77,6 +95,6 @@ export async function authorizeCaptureMode(
     runContext.captureMode = requested;
   } catch (err: any) {
     // The message only: the AxiosError carries the request body, which holds the PAT.
-    logger.warn(`Verbose capture requested but ADO credentials could not be validated; running in normal mode (${err?.message ?? 'unknown error'})`);
+    report(`Verbose capture requested but ADO credentials could not be validated; running in normal mode (${err?.message ?? 'unknown error'})`);
   }
 }

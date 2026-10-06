@@ -39,6 +39,15 @@ jest.mock('../../helpers/JsonDocGenerators/JsonDocumentGenerator', () => ({
   JSONDocumentGenerator: jest.fn().mockImplementation(() => genMock),
 }));
 
+// These tests feed axios.post a fixed sequence of answers; the access probe is one more axios.post per run and would
+// consume the first. The probe has its own tests below, which switch it on.
+beforeAll(() => {
+  process.env.ACCESS_PROBE = 'off';
+});
+afterAll(() => {
+  delete process.env.ACCESS_PROBE;
+});
+
 describe('DocumentsGeneratorController', () => {
   const axios = require('axios');
   let controller: DocumentsGeneratorController;
@@ -819,6 +828,121 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
         .catch(() => undefined);
 
       expect(storedManifest('failed').environment.credential).toEqual({ kind: 'pat', identity: undefined });
+    });
+  });
+
+  describe('who the credential is and what it can see', () => {
+    const logger = require('../../util/logger');
+    const probeResponse = {
+      data: {
+        identity: { providerDisplayName: 'MEWP Build Service (Org)', descriptor: 'Microsoft.TeamFoundation.ServiceIdentity;x' },
+        access: { repositories: { status: 'ok', count: 3 }, releases: { status: 'denied', httpStatus: 403 } },
+      },
+    };
+    const storedManifest = (status: 'succeeded' | 'failed') => {
+      const { DocumentRun } = require('../../models/DocumentRun');
+      return (DocumentRun.updateOne as jest.Mock).mock.calls.find(([, u]) => u.$set?.status === status)?.[1].$set.manifest;
+    };
+    // Routes by URL, so the probe does not disturb the template and render answers.
+    const routeAxios = (probe: () => Promise<any>) =>
+      axios.post.mockImplementation(async (url: string) => {
+        if (url.endsWith('/azure/access-probe')) return probe();
+        return url.includes('/api/') ? { data: { url: 'http://doc' } } : { data: { template: true } };
+      });
+    const run = (runId: string, overrides: any = {}) =>
+      runContextStore.run({ runId }, () => controller.createJSONDoc(makeReq(overrides), buildRes())).catch(() => undefined);
+
+    beforeEach(() => {
+      process.env.ACCESS_PROBE = 'on';
+      require('../../helpers/diagnostics/accessProbe').clearAccessProbeCache();
+      axios.post.mockReset();
+      genMock.generateContentControls.mockReset();
+      genMock.generateContentControls.mockResolvedValue({ results: [{ cc: 1 }], steps: [], artifacts: [] });
+    });
+    afterEach(() => {
+      process.env.ACCESS_PROBE = 'off';
+    });
+
+    test('records the identity name and class and what the credential can see, and warns once about a denial', async () => {
+      routeAxios(async () => probeResponse);
+
+      await run('run-probe-ok', { teamProjectName: 'MEWP' });
+
+      const credential = storedManifest('succeeded').environment.credential;
+      expect(credential).toMatchObject({ identity: 'build-service', name: 'MEWP Build Service (Org)' });
+      expect(credential.access).toEqual(probeResponse.data.access);
+      const warnings = (logger.warn as jest.Mock).mock.calls.map((c: any[]) => String(c[0]));
+      expect(warnings.filter((w: string) => w.includes('cannot read release definitions (403)'))).toHaveLength(1);
+      expect(warnings.join('\n')).toContain('in project MEWP');
+    });
+
+    test('also records it when the generation fails', async () => {
+      routeAxios(async () => probeResponse);
+      genMock.generateContentControls.mockReset();
+      genMock.generateContentControls.mockRejectedValueOnce(Object.assign(new Error('boom'), { steps: [] }));
+
+      await run('run-probe-fail');
+
+      expect(storedManifest('failed').environment.credential.name).toBe('MEWP Build Service (Org)');
+    });
+
+    test('a failing probe changes nothing about the run', async () => {
+      routeAxios(async () => {
+        throw new Error('probe down');
+      });
+
+      const result = await run('run-probe-down');
+
+      expect(result).toEqual({ url: 'http://doc' });
+      expect(storedManifest('succeeded').environment.credential.access).toBeUndefined();
+    });
+
+    test('runs alongside the generation: the generator is called before the probe has answered', async () => {
+      let answerProbe: (value: any) => void = () => undefined;
+      let probeAnswered = false;
+      routeAxios(
+        () =>
+          new Promise((resolve) => {
+            answerProbe = (value) => {
+              probeAnswered = true;
+              resolve(value);
+            };
+          })
+      );
+      let generatorStartedBeforeProbe = false;
+      genMock.generateContentControls.mockReset();
+      genMock.generateContentControls.mockImplementation(async () => {
+        generatorStartedBeforeProbe = !probeAnswered;
+        answerProbe(probeResponse);
+        return { results: [{ cc: 1 }], steps: [], artifacts: [] };
+      });
+
+      await run('run-probe-parallel');
+
+      expect(generatorStartedBeforeProbe).toBe(true);
+      expect(storedManifest('succeeded').environment.credential.name).toBe('MEWP Build Service (Org)');
+    });
+
+    test('a slow probe does not hold the response; its answer is patched onto the run afterwards, with the warning', async () => {
+      const { DocumentRun } = require('../../models/DocumentRun');
+      routeAxios(() => new Promise((resolve) => setTimeout(() => resolve(probeResponse), 1900)));
+      const startedAt = Date.now();
+
+      const result = await run('run-probe-late');
+
+      expect(result).toEqual({ url: 'http://doc' });
+      expect(Date.now() - startedAt).toBeLessThan(1800);
+      expect(storedManifest('succeeded').environment?.credential?.access).toBeUndefined();
+      const patched = () =>
+        (DocumentRun.updateOne as jest.Mock).mock.calls.find(([, u]) => u.$set?.['manifest.environment.credential']);
+      for (let i = 0; i < 40 && !patched(); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(patched()?.[1].$set['manifest.environment.credential']).toMatchObject({
+        identity: 'build-service',
+        name: 'MEWP Build Service (Org)',
+        access: probeResponse.data.access,
+      });
+      const warnings = (logger.warn as jest.Mock).mock.calls.map((c: any[]) => String(c[0]));
+      expect(warnings.some((w: string) => w.includes('cannot read release definitions (403)'))).toBe(true);
     });
   });
 

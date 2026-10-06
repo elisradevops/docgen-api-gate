@@ -16,12 +16,18 @@ import { LogEvent, LOG_EVENT_RETENTION_MS } from '../models/LogEvent';
 // How long a successful run's provisional (retain-on-failure) events linger, so ones still in
 // flight from another process can arrive and be swept by the same expiry.
 const RETAIN_PENDING_GRACE_MS = 10 * 60 * 1000;
+const ACCESS_PROBE_GRACE_MS = 1500;
 import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../helpers/runManifest';
 import { resolveDocType } from '../helpers/runDocType';
 import { authorizeCaptureMode } from '../helpers/diagnostics/captureAuthorization';
 import { assertTemplateExists } from '../helpers/templatePreflight';
 import { buildRunInput } from '../helpers/runInput';
 import { credentialKind } from '../helpers/credentialKind';
+import {
+  startAccessProbe,
+  describeAccessProblems,
+  type AccessProbeResult,
+} from '../helpers/diagnostics/accessProbe';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
@@ -29,6 +35,10 @@ export class DocumentsGeneratorController {
       const runContext = runContextStore.getStore();
       const startedAt = new Date();
       const manifest: IDocumentRunManifest = emptyManifest();
+      // Declared outside the try so the failure path can record them too.
+      let credential: { kind?: string; identity?: string; name?: string; access?: Record<string, unknown> } | undefined;
+      let accessProbe: Promise<AccessProbeResult | undefined> | undefined;
+      let probedProject = '';
       try {
         const json = JSON.stringify(req.body);
         const documentRequest: DocumentRequest = JSON.parse(json);
@@ -38,7 +48,7 @@ export class DocumentsGeneratorController {
         await authorizeCaptureMode(runContext, documentRequest.tfsCollectionUri, documentRequest.PAT);
         // Which kind of credential ran this request, recorded from the start so even a run that fails
         // early says so (never the credential itself).
-        const credential = { kind: credentialKind(documentRequest.PAT), identity: runContext?.identityKind };
+        credential = { kind: credentialKind(documentRequest.PAT), identity: runContext?.identityKind };
         manifest.environment = buildEnvironment(undefined, credential);
         const runRecord = await this.createRunRecord(runContext, startedAt, documentRequest);
         if (runRecord === 'duplicate') {
@@ -55,8 +65,12 @@ export class DocumentsGeneratorController {
         // Recorded now, not after content generation: a run that fails early (template, doc
         // template, a content control's fetch) must still say what it was asked to do.
         manifest.inputs = buildInputs(documentRequest);
+        // Who the credential is and what it can see in this project: started now, alongside the generation,
+        // and given at most ACCESS_PROBE_GRACE_MS at the end (a later answer is patched onto the run). Fails open.
+        probedProject = documentRequest.teamProjectName;
+        accessProbe = startAccessProbe(documentRequest.tfsCollectionUri, documentRequest.PAT, probedProject);
         // After the run record, so a missing template is recorded on the run; before any data
-        // is fetched, so it fails in seconds instead of after the whole generation.
+        // is fetched, so a missing template fails early instead of after the whole generation.
         if (runContext) runContext.step = 'validate-template';
         await assertTemplateExists(documentRequest.templateFile);
         const jsonDocumentGenerator: JSONDocumentGenerator = new JSONDocumentGenerator();
@@ -191,11 +205,14 @@ export class DocumentsGeneratorController {
               url: finalDocumentUrl,
             });
           }
+          const probe = await this.awaitProbeBriefly(accessProbe);
+          this.mergeAccessProbe(manifest, credential, probe.result, probedProject);
           await this.finalizeRunRecord(runContext, {
             status: 'succeeded',
             documentUrl: finalDocumentUrl,
             manifest,
           });
+          void this.patchLateAccessProbe(runContext, credential, probe.late, probedProject);
           await this.expireRetainOnFailureEvents(runContext);
           return resolve(documentUrl.data);
         } catch (err: any) {
@@ -220,11 +237,14 @@ export class DocumentsGeneratorController {
       } catch (err: any) {
         // A run that failed after discovery still says which versions it had resolved.
         if (err?.resolvedRange && manifest.inputs) manifest.inputs.resolvedRange = err.resolvedRange;
+        const probe = await this.awaitProbeBriefly(accessProbe);
+        this.mergeAccessProbe(manifest, credential, probe.result, probedProject);
         await this.finalizeRunRecord(runContext, {
           status: 'failed',
           errorChain: this.buildErrorChain(err),
           manifest,
         });
+        void this.patchLateAccessProbe(runContext, credential, probe.late, probedProject);
         await this.keepRetainOnFailureEvents(runContext);
         if (err?.statusCode) {
           return reject(err);
@@ -287,6 +307,84 @@ export class DocumentsGeneratorController {
     } catch (err) {
       logger.warn('Failed to parse x-docgen-versions header', err);
       return undefined;
+    }
+  }
+
+  // The probe runs alongside the generation; at the end it is given a short grace so a slow probe never
+  // holds the response. A late probe is recorded on the run afterwards (see patchLateAccessProbe).
+  private async awaitProbeBriefly(
+    probe: Promise<AccessProbeResult | undefined> | undefined
+  ): Promise<{ result?: AccessProbeResult; late?: Promise<AccessProbeResult | undefined> }> {
+    if (!probe) return {};
+    let timer: NodeJS.Timeout | undefined;
+    const pending = Symbol('pending');
+    try {
+      const first = await Promise.race([
+        probe.catch(() => undefined),
+        new Promise<typeof pending>((resolve) => {
+          timer = setTimeout(() => resolve(pending), ACCESS_PROBE_GRACE_MS);
+        }),
+      ]);
+      if (first === pending) return { late: probe.catch(() => undefined) };
+      return { result: first as AccessProbeResult | undefined };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Merges the probe's answer into the credential record: the identity class known at request time is kept
+  // (the probe only fills it when missing); the display name is recorded on the run on purpose.
+  private mergeCredential(
+    credential: { kind?: string; identity?: string; name?: string; access?: Record<string, unknown> } | undefined,
+    result: AccessProbeResult
+  ) {
+    return {
+      ...credential,
+      identity: credential?.identity ?? result.identity?.class,
+      name: result.identity?.name,
+      access: result.access as Record<string, unknown>,
+    };
+  }
+
+  // Merges the probe's answer into the run's credential record, and logs one warning when it cannot read
+  // something the run is likely to need. Never throws: the probe is diagnostic.
+  private mergeAccessProbe(
+    manifest: IDocumentRunManifest,
+    credential: { kind?: string; identity?: string; name?: string; access?: Record<string, unknown> } | undefined,
+    result: AccessProbeResult | undefined,
+    project: string
+  ): void {
+    if (!result) return;
+    try {
+      const merged = this.mergeCredential(credential, result);
+      manifest.environment = { ...(manifest.environment || buildEnvironment(undefined, merged)), credential: merged };
+      const problem = describeAccessProblems(result, project);
+      if (problem) logger.warn(problem);
+    } catch (err: any) {
+      logger.debug(`Could not record the access probe: ${err?.message ?? err}`);
+    }
+  }
+
+  // A probe that answered after the run was finalized: patch only the credential field (the finalize write
+  // has completed by then, so it cannot overwrite it) and log the warning now.
+  private async patchLateAccessProbe(
+    runContext: RunContext | undefined,
+    credential: { kind?: string; identity?: string; name?: string; access?: Record<string, unknown> } | undefined,
+    late: Promise<AccessProbeResult | undefined> | undefined,
+    project: string
+  ): Promise<void> {
+    if (!late || !runContext?.runId || !isMongoConnected()) return;
+    try {
+      const result = await late;
+      if (!result) return;
+      await DocumentRun.updateOne(
+        { runId: runContext.runId },
+        { $set: { 'manifest.environment.credential': this.mergeCredential(credential, result) } }
+      );
+      const problem = describeAccessProblems(result, project);
+      if (problem) logger.warn(problem);
+    } catch (err: any) {
+      logger.debug(`Could not record the late access probe: ${err?.message ?? err}`);
     }
   }
 
