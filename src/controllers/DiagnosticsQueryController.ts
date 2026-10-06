@@ -146,6 +146,8 @@ export class DiagnosticsQueryController {
         limit: parsePositiveInt(req.query.limit),
         includeCount: req.query.includeCount === 'true',
         insertedAfter: parseDate(req.query.insertedAfter),
+        tail: req.query.tail === 'true',
+        afterId: typeof req.query.afterId === 'string' ? req.query.afterId : undefined,
       });
       // serverTime: the live tail seeds and advances its boundary from the server's clock, never the
       // browser's, so clock skew between the two can't drop events.

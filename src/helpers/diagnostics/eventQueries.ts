@@ -120,6 +120,13 @@ export interface ListEventsParams {
   // inserts the document, on one clock, and the default `_id` index serves the range, so this needs
   // no extra index.
   insertedAfter?: Date;
+  // Live tail by cursor: events in INSERTION order (oldest first) after `afterId` (strictly), or, without
+  // it, after `insertedAfter` (with the overlap). A burst larger than `limit` is drained over successive
+  // polls instead of being cut off; the response carries `behind`, how many events are still waiting
+  // after the returned page (0 when this page reached the end), and `tail: true` so a client can tell an
+  // api-gate that predates this mode (which ignores both parameters).
+  tail?: boolean;
+  afterId?: string;
 }
 
 // Absorbs documents generated within the same second and a little clock difference between
@@ -132,11 +139,37 @@ export function insertedAfterCondition(insertedAfter?: Date): Record<string, unk
   return { _id: { $gte: mongoose.Types.ObjectId.createFromTime(seconds) } };
 }
 
+function parseObjectId(raw?: string): mongoose.Types.ObjectId | undefined {
+  return typeof raw === 'string' && /^[0-9a-fA-F]{24}$/.test(raw) ? new mongoose.Types.ObjectId(raw) : undefined;
+}
+
+// Tail mode of listEvents: see ListEventsParams.tail. The filters still apply; sort is `_id` ascending
+// (insertion order), which the default `_id` index serves, so it needs no extra index.
+async function listTail(params: ListEventsParams, base: Record<string, unknown>, limit: number) {
+  const afterId = parseObjectId(params.afterId);
+  const start = afterId ? { _id: { $gt: afterId } } : insertedAfterCondition(params.insertedAfter);
+  const conditions = [base, start].filter((c) => Object.keys(c).length > 0);
+  const docs = await LogEvent.find(conditions.length > 1 ? { $and: conditions } : conditions[0] ?? base)
+    .sort({ _id: 1 })
+    .limit(limit + 1)
+    .lean();
+  const hasMore = docs.length > limit;
+  const page = hasMore ? docs.slice(0, limit) : docs;
+  let behind = 0;
+  if (hasMore) {
+    const after = { _id: { $gt: (page[page.length - 1] as any)._id } };
+    const counted = Object.keys(base).length > 0 ? { $and: [base, after] } : after;
+    behind = await LogEvent.countDocuments(counted);
+  }
+  return { events: page, nextCursor: undefined, matchedCount: undefined, tail: true as const, behind };
+}
+
 export async function listEvents(params: ListEventsParams) {
   const sortBy = params.sortBy ?? 'ts';
   const sortDir = params.sortDir ?? 'desc';
   const limit = clampLimit(params.limit);
   const base = buildMatch(params.filters);
+  if (params.tail) return listTail(params, base, limit);
   const cursorCond = buildCursorCondition(sortBy, sortDir, decodeCursor(params.cursor));
   const insertedCond = insertedAfterCondition(params.insertedAfter);
   const conditions = [base, cursorCond, insertedCond].filter((c) => Object.keys(c).length > 0);
