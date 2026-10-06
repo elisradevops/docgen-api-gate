@@ -4,6 +4,7 @@ import type { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { withRunContext } from '../../util/logger';
 import {
   attachRunContext,
+  resolveHeadlessCaptureMode,
   installRunIdForwarding,
   resolveRunId,
   runContextStore,
@@ -224,21 +225,92 @@ describe('attachRunContext middleware', () => {
     }
   );
 
-  test('defaults to no requested capture mode (normal) when the header is absent', () => {
-    let seenInsideNext: unknown;
-    attachRunContext(fakeReq({}), fakeRes(), () => {
-      seenInsideNext = runContextStore.getStore();
+  // The headless default (below) is what applies without a header; these two pin the "no default" cases.
+  describe('with the headless default switched off', () => {
+    const previous = process.env.HEADLESS_CAPTURE_MODE;
+    beforeAll(() => {
+      process.env.HEADLESS_CAPTURE_MODE = 'normal';
     });
-    expect((seenInsideNext as any).requestedCaptureMode).toBeUndefined();
-    expect((seenInsideNext as any).captureMode).toBeUndefined();
+    afterAll(() => {
+      if (previous === undefined) delete process.env.HEADLESS_CAPTURE_MODE;
+      else process.env.HEADLESS_CAPTURE_MODE = previous;
+    });
+
+    test('requests no capture mode (normal) when the header is absent', () => {
+      let seenInsideNext: unknown;
+      attachRunContext(fakeReq({}), fakeRes(), () => {
+        seenInsideNext = runContextStore.getStore();
+      });
+      expect((seenInsideNext as any).requestedCaptureMode).toBeUndefined();
+      expect((seenInsideNext as any).captureMode).toBeUndefined();
+    });
+
+    test('drops a malformed x-docgen-capture-mode rather than trusting it', () => {
+      let seenInsideNext: unknown;
+      attachRunContext(fakeReq({ 'x-docgen-capture-mode': 'DROP TABLE runs' }), fakeRes(), () => {
+        seenInsideNext = runContextStore.getStore();
+      });
+      expect((seenInsideNext as any).requestedCaptureMode).toBeUndefined();
+    });
+  });
+});
+
+describe('detailed capture by default for runs that do not come from the UI', () => {
+  const fakeReq = (headers: Record<string, string>, path?: string) =>
+    ({ header: (name: string) => headers[name.toLowerCase()], path } as any);
+  const fakeRes = () => ({ setHeader: () => undefined } as any);
+  const requested = (headers: Record<string, string>, path = '/jsonDocument/create') => {
+    let store: any;
+    attachRunContext(fakeReq(headers, path), fakeRes(), () => {
+      store = runContextStore.getStore();
+    });
+    return store.requestedCaptureMode;
+  };
+  const previous = process.env.HEADLESS_CAPTURE_MODE;
+  afterEach(() => {
+    if (previous === undefined) delete process.env.HEADLESS_CAPTURE_MODE;
+    else process.env.HEADLESS_CAPTURE_MODE = previous;
   });
 
-  test('drops a malformed x-docgen-capture-mode rather than trusting it', () => {
-    let seenInsideNext: unknown;
-    attachRunContext(fakeReq({ 'x-docgen-capture-mode': 'DROP TABLE runs' }), fakeRes(), () => {
-      seenInsideNext = runContextStore.getStore();
-    });
-    expect((seenInsideNext as any).requestedCaptureMode).toBeUndefined();
+  test('a header-less generation request (the Auto SVD pipeline) requests verbose capture', () => {
+    delete process.env.HEADLESS_CAPTURE_MODE;
+    expect(requested({})).toBe('verbose');
+  });
+
+  test('a UI run (it supplies its own run id) is left alone', () => {
+    delete process.env.HEADLESS_CAPTURE_MODE;
+    expect(requested({ 'x-docgen-run-id': 'abc-123' })).toBeUndefined();
+  });
+
+  test('a request that is not a generation (pickers, polling) is left alone', () => {
+    delete process.env.HEADLESS_CAPTURE_MODE;
+    expect(requested({}, '/azure/tests/plans')).toBeUndefined();
+  });
+
+  test('an explicit header wins over the default', () => {
+    delete process.env.HEADLESS_CAPTURE_MODE;
+    expect(requested({ 'x-docgen-capture-mode': 'retain-on-failure' })).toBe('retain-on-failure');
+  });
+
+  test('HEADLESS_CAPTURE_MODE selects the mode, and normal or off switches the default off', () => {
+    process.env.HEADLESS_CAPTURE_MODE = 'retain-on-failure';
+    expect(requested({})).toBe('retain-on-failure');
+    process.env.HEADLESS_CAPTURE_MODE = 'normal';
+    expect(requested({})).toBeUndefined();
+    process.env.HEADLESS_CAPTURE_MODE = 'OFF';
+    expect(requested({})).toBeUndefined();
+  });
+
+  test('an unrecognised value falls back to verbose rather than silently turning capture off', () => {
+    process.env.HEADLESS_CAPTURE_MODE = 'verbos';
+    expect(requested({})).toBe('verbose');
+  });
+
+  test('resolveHeadlessCaptureMode reads its argument', () => {
+    expect(resolveHeadlessCaptureMode(undefined)).toBe('verbose');
+    expect(resolveHeadlessCaptureMode('')).toBe('verbose');
+    expect(resolveHeadlessCaptureMode(' Retain-On-Failure ')).toBe('retain-on-failure');
+    expect(resolveHeadlessCaptureMode('normal')).toBeUndefined();
   });
 });
 

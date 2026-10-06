@@ -67,6 +67,8 @@ export class JSONDocumentGenerator {
             contentControlTitle: contentControl.title,
           });
           err.__startedAt = startedAt;
+          // An SVD that fails after discovery still tells us which versions it resolved.
+          err.__resolvedRange = err?.response?.data?.resolvedRange;
           throw err;
         }
       }),
@@ -125,6 +127,9 @@ export class JSONDocumentGenerator {
           stack: reason?.stack,
         };
       });
+      aggregateError.resolvedRange = failures
+        .map(({ result }) => (result as PromiseRejectedResult).reason?.__resolvedRange)
+        .find((range) => !!range);
       aggregateError.steps = steps;
       aggregateError.artifacts = artifacts;
       throw aggregateError;

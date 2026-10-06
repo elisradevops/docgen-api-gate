@@ -759,6 +759,69 @@ describe('DocumentsGeneratorController — Phase 7a docType on DocumentRun', () 
     );
   });
 
+  describe('what an SVD resolved to, and who ran it', () => {
+    const range = {
+      rangeType: 'release',
+      definition: { id: 12, name: 'MyRelease' },
+      to: { id: 418, name: 'Release-418', source: 'auto' },
+      from: { id: 409, source: 'auto' },
+    };
+    const storedManifest = (status: 'succeeded' | 'failed') => {
+      const { DocumentRun } = require('../../models/DocumentRun');
+      const call = (DocumentRun.updateOne as jest.Mock).mock.calls.find(([, u]) => u.$set?.status === status);
+      return call?.[1].$set.manifest;
+    };
+
+    test('stores the resolved range from the content control on a successful run', async () => {
+      genMock.generateContentControls.mockReset();
+      genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1, resolvedRange: range }], steps: [], artifacts: [] });
+
+      await runContextStore.run({ runId: 'run-range-ok' }, () => controller.createJSONDoc(makeReq(), buildRes()));
+
+      expect(storedManifest('succeeded').inputs.resolvedRange).toEqual(range);
+    });
+
+    test('stores the resolved range when the content control fails after discovery', async () => {
+      genMock.generateContentControls.mockReset();
+      const failure: any = new Error('Failed generating 1 of 1 content control(s): SVD');
+      failure.resolvedRange = range;
+      failure.steps = [];
+      genMock.generateContentControls.mockRejectedValueOnce(failure);
+
+      await runContextStore
+        .run({ runId: 'run-range-fail' }, () => controller.createJSONDoc(makeReq(), buildRes()))
+        .catch(() => undefined);
+
+      expect(storedManifest('failed').inputs.resolvedRange).toEqual(range);
+    });
+
+    test('records the kind of credential and its identity class, never the credential', async () => {
+      genMock.generateContentControls.mockReset();
+      genMock.generateContentControls.mockResolvedValueOnce({ results: [{ cc: 1 }], steps: [], artifacts: [] });
+      const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJl';
+
+      await runContextStore.run({ runId: 'run-cred', identityKind: 'build-service' } as any, () =>
+        controller.createJSONDoc(makeReq({ PAT: jwt }), buildRes())
+      );
+
+      const environment = storedManifest('succeeded').environment;
+      expect(environment.credential).toEqual({ kind: 'bearer', identity: 'build-service' });
+      expect(JSON.stringify(storedManifest('succeeded'))).not.toContain(jwt);
+    });
+
+    test('a run that fails before the doc template step still records the credential kind', async () => {
+      axios.get.mockResolvedValueOnce({ status: 404, data: { destroy: jest.fn() } });
+
+      await runContextStore
+        .run({ runId: 'run-cred-early' }, () =>
+          controller.createJSONDoc(makeReq({ templateFile: 'http://s3/templates/shared/STD/STD.dotx' }), buildRes())
+        )
+        .catch(() => undefined);
+
+      expect(storedManifest('failed').environment.credential).toEqual({ kind: 'pat', identity: undefined });
+    });
+  });
+
   test('a run that fails at the template check still records its input and inputs', async () => {
     const { DocumentRun } = require('../../models/DocumentRun');
     axios.get.mockResolvedValueOnce({ status: 404, data: { destroy: jest.fn() } });

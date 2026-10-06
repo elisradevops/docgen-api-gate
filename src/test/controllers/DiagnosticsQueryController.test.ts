@@ -392,7 +392,7 @@ describe('DiagnosticsQueryController', () => {
       expect(res.statusCode).toBe(404);
     });
 
-    test('diffs both runs and returns the result verbatim', async () => {
+    test('diffs both runs and returns the diff with the findings that explain it', async () => {
       const runA = { runId: 'r1' };
       const runB = { runId: 'r2' };
       mockGetRunDetail.mockResolvedValueOnce({ run: runA }).mockResolvedValueOnce({ run: runB });
@@ -404,7 +404,8 @@ describe('DiagnosticsQueryController', () => {
 
       expect(mockDiffManifests).toHaveBeenCalledWith(runA, runB);
       expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual(diffResult);
+      expect(res.body).toEqual({ ...diffResult, findings: expect.any(Array) });
+      expect((res.body as any).findings[0]).toMatchObject({ key: 'unexplained', severity: 'info' });
     });
   });
 

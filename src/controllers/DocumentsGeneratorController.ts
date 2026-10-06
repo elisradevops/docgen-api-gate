@@ -21,6 +21,7 @@ import { resolveDocType } from '../helpers/runDocType';
 import { authorizeCaptureMode } from '../helpers/diagnostics/captureAuthorization';
 import { assertTemplateExists } from '../helpers/templatePreflight';
 import { buildRunInput } from '../helpers/runInput';
+import { credentialKind } from '../helpers/credentialKind';
 
 export class DocumentsGeneratorController {
   public async createJSONDoc(req: Request, res: Response): Promise<any> {
@@ -35,6 +36,10 @@ export class DocumentsGeneratorController {
         this.normalizeBucket(documentRequest);
         // Before the run record, so the record (and every later log) reflects the effective mode.
         await authorizeCaptureMode(runContext, documentRequest.tfsCollectionUri, documentRequest.PAT);
+        // Which kind of credential ran this request, recorded from the start so even a run that fails
+        // early says so (never the credential itself).
+        const credential = { kind: credentialKind(documentRequest.PAT), identity: runContext?.identityKind };
+        manifest.environment = buildEnvironment(undefined, credential);
         const runRecord = await this.createRunRecord(runContext, startedAt, documentRequest);
         if (runRecord === 'duplicate') {
           // The same run id is already being (or was) generated: a client retried the request. Do
@@ -96,7 +101,7 @@ export class DocumentsGeneratorController {
               startedAt: docTemplateStartedAt,
             })
           );
-          manifest.environment = buildEnvironment(this.parseVersionsHeader(docTemplateResponse.headers));
+          manifest.environment = buildEnvironment(this.parseVersionsHeader(docTemplateResponse.headers), credential);
 
           logger.debug('generated template');
           const docTemplate = docTemplateResponse.data;
@@ -128,6 +133,9 @@ export class DocumentsGeneratorController {
             .map((c) => c?.resolvedContextName)
             .find((n) => !!n);
           if (resolvedCtx && manifest.inputs) manifest.inputs.resolvedContextName = resolvedCtx;
+          // What an SVD actually resolved its range to (an omitted from/to is auto-discovered).
+          const resolvedRange = (contentControls as any[]).map((c) => c?.resolvedRange).find((r) => !!r);
+          if (resolvedRange && manifest.inputs) manifest.inputs.resolvedRange = resolvedRange;
           const hasAutoDiscoveredRange = (documentRequest.contentControls || []).some((cc) => {
             const data = (cc as any).data || {};
             return (data.rangeType === 'release' || data.rangeType === 'pipeline') &&
@@ -210,6 +218,8 @@ export class DocumentsGeneratorController {
           throw err;
         }
       } catch (err: any) {
+        // A run that failed after discovery still says which versions it had resolved.
+        if (err?.resolvedRange && manifest.inputs) manifest.inputs.resolvedRange = err.resolvedRange;
         await this.finalizeRunRecord(runContext, {
           status: 'failed',
           errorChain: this.buildErrorChain(err),

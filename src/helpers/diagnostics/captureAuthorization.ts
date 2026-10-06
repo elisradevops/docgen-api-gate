@@ -15,17 +15,32 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 500;
 const VALIDATION_TIMEOUT_MS = 10_000;
 
-// sha256(orgUrl, PAT) -> expiry. Hashes only (the PAT is never held), positive results only, and
-// bounded with oldest-first eviction. Map iteration order is insertion order.
-const validated = new Map<string, number>();
+type IdentityKind = NonNullable<RunContext['identityKind']>;
 
-function remember(key: string, now: number): void {
+// sha256(orgUrl, PAT) -> expiry and the identity class. Hashes only (the PAT is never held), positive
+// results only, and bounded with oldest-first eviction. Map iteration order is insertion order.
+const validated = new Map<string, { until: number; identityKind: IdentityKind }>();
+
+function remember(key: string, now: number, identityKind: IdentityKind): void {
   validated.delete(key);
   if (validated.size >= CACHE_MAX) {
     const oldest = validated.keys().next().value;
     if (oldest !== undefined) validated.delete(oldest);
   }
-  validated.set(key, now + CACHE_TTL_MS);
+  validated.set(key, { until: now + CACHE_TTL_MS, identityKind });
+}
+
+// The class of identity behind a credential, from Azure DevOps' connectionData (the response of the
+// check this module already makes). Only the class: a name could identify a person, and the class is
+// what explains "the pipeline sees nothing the user sees" (a build service identity has its own, usually
+// narrower, permissions).
+export function identityKindFromConnectionData(connectionData: any): IdentityKind {
+  const user = connectionData?.authenticatedUser;
+  if (!user || typeof user !== 'object') return 'unknown';
+  const descriptor = String(user.descriptor || '');
+  const names = [user.providerDisplayName, user.customDisplayName].map((n) => String(n || ''));
+  if (/ServiceIdentity/i.test(descriptor) || names.some((n) => /build service/i.test(n))) return 'build-service';
+  return 'user';
 }
 
 export function clearCaptureAuthorizationCache(): void {
@@ -46,14 +61,18 @@ export async function authorizeCaptureMode(
     }
     const key = createHash('sha256').update(`${orgUrl}\u0000${pat}`).digest('hex');
     const now = Date.now();
-    const cachedUntil = validated.get(key);
-    if (cachedUntil === undefined || cachedUntil <= now) {
-      await axios.post(
+    const cached = validated.get(key);
+    if (cached === undefined || cached.until <= now) {
+      const response = await axios.post(
         `${process.env.dgContentControlUrl}/azure/check-org-url`,
         { orgUrl, token: pat },
         { timeout: VALIDATION_TIMEOUT_MS }
       );
-      remember(key, now);
+      const identityKind = identityKindFromConnectionData(response?.data?.data);
+      remember(key, now, identityKind);
+      runContext.identityKind = identityKind;
+    } else {
+      runContext.identityKind = cached.identityKind;
     }
     runContext.captureMode = requested;
   } catch (err: any) {

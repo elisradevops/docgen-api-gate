@@ -153,6 +153,28 @@ describe('JSONDocumentGenerator', () => {
     );
   });
 
+  test('carries the resolved range of a content control that failed after discovery', async () => {
+    const range = { rangeType: 'release', to: { id: 418, source: 'auto' }, from: { id: 409, source: 'auto' } };
+    const failure: any = Object.assign(new Error('Request failed with status code 500'), {
+      response: { status: 500, data: { message: 'artifact lookup failed', resolvedRange: range } },
+    });
+    (mockedAxios.post as jest.Mock).mockRejectedValueOnce(failure);
+
+    await expect(
+      generator.generateContentControls({ ...baseRequest, contentControls: [baseRequest.contentControls[0]] })
+    ).rejects.toMatchObject({ resolvedRange: range });
+  });
+
+  test('has no resolved range when the failing content control sent none', async () => {
+    (mockedAxios.post as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+
+    const error: any = await generator
+      .generateContentControls({ ...baseRequest, contentControls: [baseRequest.contentControls[0]] })
+      .catch((e) => e);
+
+    expect(error.resolvedRange).toBeUndefined();
+  });
+
   test('generateContentControls captures every failure, not just the first (allSettled)', async () => {
     const boom1 = new Error('boom1');
     const boom2 = new Error('boom2');
