@@ -200,6 +200,11 @@ class AttachmentService:
                         f.write(base64.b64decode(base64_data))
                 else:
                     # Normal URL -> Download from Azure DevOps or wherever using session
+                    scheme = urlsplit(self.url).scheme.lower()
+                    if scheme not in ("http", "https"):
+                        # e.g. "blob:" - a browser-local URL saved into the work item; it cannot be fetched by anyone
+                        self._log("attachment_failed", stage="validate", error=f"unsupported URL scheme '{scheme}'")
+                        return self._return_bad_attachment()
                     stage = "download"
                     session = self._get_session()
                     azure_response = session.get(

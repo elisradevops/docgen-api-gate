@@ -232,6 +232,21 @@ class AttachmentServiceDownloadTests(unittest.TestCase):
         self.assertIn("fileName=a.png", log)
         self.assertIn("sig=%2A%2A%2A", log)
 
+    def test_blob_url_is_rejected_without_a_request(self):
+        service = AttachmentService(
+            "attachments", "minio:9000", "access", "secret",
+            "blob:https://ado.example/6f1c1c1e-0000-0000-0000-000000000000", ".png", "Project", "pat",
+        )
+        session = Mock()
+        output = io.StringIO()
+        with patch.object(AttachmentService, "_get_session", return_value=session), contextlib.redirect_stdout(output):
+            result = asyncio.run(service.process_attachment())
+
+        self.assertEqual(result["fileName"], "bad-attachment.png")
+        session.get.assert_not_called()
+        self.assertIn('"stage": "validate"', output.getvalue())
+        self.assertIn("unsupported URL scheme 'blob'", output.getvalue())
+
     def test_empty_download_logs_the_reason(self):
         service = self.create_service()
         response = Mock(status_code=200, headers={"Content-Type": "image/png"}, content=b"")
