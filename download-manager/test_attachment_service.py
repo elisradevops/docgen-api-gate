@@ -232,6 +232,41 @@ class AttachmentServiceDownloadTests(unittest.TestCase):
         self.assertIn("fileName=a.png", log)
         self.assertIn("sig=%2A%2A%2A", log)
 
+    def download_url_requested(self, url):
+        service = AttachmentService("attachments", "minio:9000", "access", "secret", url, ".png", "Project", "pat")
+        response = Mock(status_code=200, headers={"Content-Type": "image/png"}, content=b"")
+        session = Mock()
+        session.get.return_value = response
+        output = io.StringIO()
+        with patch.object(AttachmentService, "_get_session", return_value=session), contextlib.redirect_stdout(output):
+            asyncio.run(service.process_attachment())
+        return session.get.call_args[0][0]
+
+    def test_download_parameter_opens_the_query_when_the_url_has_none(self):
+        self.assertEqual(
+            self.download_url_requested("https://ado.example/org/_apis/wit/attachments/1"),
+            "https://ado.example/org/_apis/wit/attachments/1?download=true",
+        )
+
+    def test_download_parameter_joins_an_existing_query(self):
+        stored = "https://ado.example/org/proj/_apis/wit/attachments?FileNameGUID=6f1c1c1e-1111-2222-3333-444455556666&FileName=a.png"
+
+        self.assertEqual(self.download_url_requested(stored), stored + "&download=true")
+
+    def test_relative_url_is_rejected_with_a_clear_reason(self):
+        service = AttachmentService(
+            "attachments", "minio:9000", "access", "secret",
+            "/tfs/Col/WorkItemTracking/v1.0/AttachFileHandler.ashx?FileNameGuid=x&FileName=a.png", ".png", "Project", "pat",
+        )
+        session = Mock()
+        output = io.StringIO()
+        with patch.object(AttachmentService, "_get_session", return_value=session), contextlib.redirect_stdout(output):
+            result = asyncio.run(service.process_attachment())
+
+        self.assertEqual(result["fileName"], "bad-attachment.png")
+        session.get.assert_not_called()
+        self.assertIn("relative URL (no scheme)", output.getvalue())
+
     def test_blob_url_is_rejected_without_a_request(self):
         service = AttachmentService(
             "attachments", "minio:9000", "access", "secret",
