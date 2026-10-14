@@ -203,12 +203,15 @@ class AttachmentService:
                     scheme = urlsplit(self.url).scheme.lower()
                     if scheme not in ("http", "https"):
                         # e.g. "blob:" - a browser-local URL saved into the work item; it cannot be fetched by anyone
-                        self._log("attachment_failed", stage="validate", error=f"unsupported URL scheme '{scheme}'")
+                        reason = "relative URL (no scheme)" if not scheme else f"unsupported URL scheme '{scheme}'"
+                        self._log("attachment_failed", stage="validate", error=reason)
                         return self._return_bad_attachment()
                     stage = "download"
                     session = self._get_session()
                     azure_response = session.get(
-                        self.url + "?download=true",
+                        # An image URL stored with its id in the query (e.g. ...attachments?FileNameGUID=...) is
+                        # requested as stored, so the parameter joins the existing query instead of opening a second one.
+                        self.url + ("&" if "?" in self.url else "?") + "download=true",
                         headers=self.headers
                     )
                     http_info = self._response_info(azure_response)
