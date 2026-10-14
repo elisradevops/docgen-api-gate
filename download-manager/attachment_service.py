@@ -7,6 +7,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import base64
+import json
+import time
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from datetime import datetime
 from PIL import Image
 import uuid
@@ -56,8 +59,26 @@ class AttachmentService:
         self.token = token
         self.headers = self._build_auth_headers(token)
         self.image_extensions = [".jpg", ".jpeg", ".png", ".ico", ".im", ".pcx", ".tga", ".tiff"]
+        self.jpeg_extensions = [".jpg", ".jpeg"]
         self.is_base64 = is_base64
         self.base64_chunks = base64_chunks
+
+    @staticmethod
+    def _flatten_for_jpeg(image):
+        """JPEG has no alpha channel. Pillow picks the save format from the extension, so a PNG
+        saved under a .jpg name (RGBA) fails with 'cannot write mode RGBA as JPEG'. Transparent
+        images are composited onto white; any other mode is converted to RGB."""
+        if image.mode in ("RGB", "L"):
+            return image
+        has_alpha = image.mode in ("RGBA", "LA", "PA", "La", "RGBa") or (
+            image.mode == "P" and "transparency" in image.info
+        )
+        if not has_alpha:
+            return image.convert("RGB")
+        rgba = image.convert("RGBA")
+        background = Image.new("RGB", rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        return background
 
     def _build_auth_headers(self, token):
         token = str(token or '').strip()
@@ -79,6 +100,61 @@ class AttachmentService:
           'Authorization': 'Basic ' + authorization
         }
 
+    _SENSITIVE_QUERY_KEY = re.compile(r"sig|token|key|secret|pat|password|auth", re.IGNORECASE)
+
+    @classmethod
+    def _safe_url(cls, url):
+        """The request URL for logs: no credentials in the host part, no secret-looking query values, bounded."""
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname or ""
+            netloc = host + (":" + str(parts.port) if parts.port else "")
+            query = urlencode(
+                [(k, "***" if cls._SENSITIVE_QUERY_KEY.search(k) else v) for k, v in parse_qsl(parts.query)]
+            )
+            return urlunsplit((parts.scheme, netloc, parts.path, query, ""))[:400]
+        except Exception:
+            return "<unparseable url>"
+
+    @staticmethod
+    def _response_info(response):
+        """Status, content type and Retry-After of an HTTP response, when it has them (never the body or headers wholesale)."""
+        info = {}
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            info["http_status"] = status
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            try:
+                content_type = headers.get("Content-Type")
+                retry_after = headers.get("Retry-After")
+            except Exception:
+                content_type = retry_after = None
+            if isinstance(content_type, str):
+                info["content_type"] = content_type
+            if isinstance(retry_after, str):
+                info["retry_after"] = retry_after
+        return info
+
+    def _log(self, event, **fields):
+        """One greppable line: '[attachment] <event> {json}'. Flushed at once - stdout is block-buffered in a
+        container, so an unflushed line can be delayed or lost. Never pass the token or request headers."""
+        if self.is_base64 and self.base64_chunks:
+            source = "base64-chunks"
+        elif str(self.url).startswith("data:"):
+            source = "data-url"
+        else:
+            source = "url"
+        context = {"source": source, "ext": self.ext, "project": self.project_name}
+        if source == "url":
+            context["url"] = self._safe_url(self.url)
+        context.update(fields)
+        print("[attachment] " + event + " " + json.dumps({k: v for k, v in context.items() if v is not None}, default=str), flush=True)
+
+    @staticmethod
+    def _short(error):
+        return str(error)[:300]
+
     def _process_base64_chunks(self, file_name):
         """Reassemble and save base64 chunks to file"""
         try:
@@ -90,10 +166,14 @@ class AttachmentService:
                 f.write(base64.b64decode(complete_base64))
             return True
         except Exception as e:
-            print(f"Error processing base64 chunks: {str(e)}")
+            self._log("attachment_failed", stage="decode", error_type=type(e).__name__,
+                      error=self._short(e), chunks=len(self.base64_chunks or []))
             return False
 
     async def process_attachment(self):
+        started = time.monotonic()
+        stage = "init"
+        http_info = {}
         try:
             # 1) Generate a unique file name
             file_base_name = str(uuid.uuid4())  # random UUID
@@ -111,29 +191,37 @@ class AttachmentService:
                     match = re.match(r'^data:(.*?);base64,(.*)$', self.url)
                     if not match:
                         # Not properly formed data URL -> treat as invalid
+                        self._log("attachment_failed", stage="decode", error="malformed data URL")
                         return self._return_bad_attachment()
 
+                    stage = "decode"
                     base64_data = match.group(2)
                     with open(file_name, 'wb') as f:
                         f.write(base64.b64decode(base64_data))
                 else:
                     # Normal URL -> Download from Azure DevOps or wherever using session
+                    stage = "download"
                     session = self._get_session()
                     azure_response = session.get(
                         self.url + "?download=true",
                         headers=self.headers
                     )
+                    http_info = self._response_info(azure_response)
                     azure_response.raise_for_status()
+                    stage = "write"
                     with open(file_name, 'wb') as f:
                         f.write(azure_response.content)
 
             # 3) Check file size
+            stage = "empty-check"
             if os.stat(file_name).st_size == 0:
                 # If empty, remove file & return "bad" path
                 os.remove(file_name)
+                self._log("attachment_failed", stage=stage, error="downloaded file is empty", **http_info)
                 return self._return_bad_attachment()
 
             # 4) Upload to Minio
+            stage = "minio-upload"
             client = Minio(
                 self.minio_end_point,
                 access_key=self.minio_access_key,
@@ -149,40 +237,48 @@ class AttachmentService:
                 self.bucket_name, file_bucket_path, file_name,
             )
 
-            value = {}
+            value = {
+                "attachmentPath": full_download_path,
+                "fileName": file_name
+            }
 
-            # 5) If it's an image extension, create & upload a thumbnail too
+            # 5) If it's an image extension, create & upload a thumbnail too.
+            # A file that cannot be opened as an image is still a bad attachment. Once it opens,
+            # the thumbnail is optional: the original is already uploaded, so a thumbnail failure
+            # must not replace it with the placeholder.
             if self.ext.lower() in self.image_extensions:
+                stage = "thumbnail-open"
                 image = Image.open(file_name)
                 thumbnail_name = file_base_name + "-thumbnail" + self.ext
                 thumbnail_file_path = f"{self.project_name}/{time_now}/{thumbnail_name}"
-                thumbnail_image = image.resize((256, 256))
-                thumbnail_image.save(thumbnail_name)
+                try:
+                    thumbnail_image = image.resize((256, 256))
+                    if self.ext.lower() in self.jpeg_extensions:
+                        thumbnail_image = self._flatten_for_jpeg(thumbnail_image)
+                    thumbnail_image.save(thumbnail_name)
 
-                client.fput_object(
-                    self.bucket_name, thumbnail_file_path, thumbnail_name,
-                )
+                    client.fput_object(
+                        self.bucket_name, thumbnail_file_path, thumbnail_name,
+                    )
 
-                thumbnail_path = f"http://{self.minio_end_point}/{self.bucket_name}/{thumbnail_file_path}"
-                os.remove(thumbnail_name)
-
-                value = {
-                    "attachmentPath": full_download_path,
-                    "fileName": file_name,
-                    "thumbnailPath": thumbnail_path,
-                    "thumbnailName": thumbnail_name
-                }
-            else:
-                value = {
-                    "attachmentPath": full_download_path,
-                    "fileName": file_name
-                }
+                    value["thumbnailPath"] = f"http://{self.minio_end_point}/{self.bucket_name}/{thumbnail_file_path}"
+                    value["thumbnailName"] = thumbnail_name
+                except Exception as e:
+                    self._log("thumbnail_skipped", file=file_name, error_type=type(e).__name__,
+                              error=self._short(e), image_mode=getattr(image, "mode", None),
+                              elapsed_ms=int((time.monotonic() - started) * 1000))
+                finally:
+                    if os.path.exists(thumbnail_name):
+                        os.remove(thumbnail_name)
 
             # Remove local file after uploading
             os.remove(file_name)
 
         except Exception as e:
-            print(f"Error in process_attachment: {str(e)}")
+            # A failed request carries its own response (HTTPError); a retry-exhausted one does not.
+            failed_info = http_info or self._response_info(getattr(e, "response", None))
+            self._log("attachment_failed", stage=stage, error_type=type(e).__name__, error=self._short(e),
+                      elapsed_ms=int((time.monotonic() - started) * 1000), **failed_info)
             return self._return_bad_attachment()
 
         sys.stdout.flush()

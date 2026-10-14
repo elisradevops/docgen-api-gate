@@ -32,7 +32,9 @@ try:
             res = await attachment_service.process_attachment()
         except S3Error as exc:
             print("error occurred.", exc)
-        except:
+        except Exception as exc:
+            # Reached before or outside process_attachment (bad request body, missing field), so nothing else logs it.
+            print(f"[attachment] request_failed {type(exc).__name__}: {str(exc)[:300]}", flush=True)
             full_download_path = f"http://{json['minioEndPoint']}/attachments/bad-attachment.png"
             file_name = "bad-attachment.png"
             value = {
