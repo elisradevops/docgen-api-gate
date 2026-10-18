@@ -71,6 +71,7 @@ function findOneChain(result: unknown) {
 
 describe('GET /diagnostics/overview, /diagnostics/issues, /diagnostics/issues/:issueId', () => {
   let prevReadyState: number;
+  let connectSpy: jest.SpyInstance;
 
   function createApp(): any {
     const AppClass = require('../../app').default;
@@ -78,7 +79,18 @@ describe('GET /diagnostics/overview, /diagnostics/issues, /diagnostics/issues/:i
   }
 
   beforeAll(() => {
+    // A request that finds readyState 0 makes requireMongo -> ensureMongoConnection start a real
+    // mongoose.connect() (to host `mongodb`). That attempt fails some seconds later - longer under load -
+    // and mongoose then resets the shared connection's readyState to 0 and schedules reconnect timers,
+    // clobbering the readyState = 1 that whichever later test is in flight relies on: a 503 where a 200/404
+    // was expected, in a different test on each occurrence. Stubbing connect() contains it: the
+    // "disconnected" case still takes the same path, but nothing outlives it.
+    connectSpy = jest.spyOn(mongoose, 'connect').mockResolvedValue(mongoose as any);
     createApp(); // model index-build ordering warm-up — see DiagnosticsIngest.test.ts
+  });
+
+  afterAll(() => {
+    connectSpy.mockRestore();
   });
 
   beforeEach(() => {
@@ -111,6 +123,8 @@ describe('GET /diagnostics/overview, /diagnostics/issues, /diagnostics/issues/:i
     const app = createApp();
     await withLocalAgent(app, (agent) => agent.get('/diagnostics/overview').expect(503));
     expect(mockDocumentRunAggregate).not.toHaveBeenCalled();
+    // The reconnect attempt this case provokes went to the stub, not to a real connection.
+    expect(connectSpy).toHaveBeenCalled();
   });
 
   test('GET /diagnostics/issues defaults to unresolved with no session required', async () => {
