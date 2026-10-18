@@ -32,6 +32,9 @@ jest.mock('../../util/logger', () => ({
 
 import { MinioController } from '../../controllers/MinioController';
 import { buildRes } from '../utils/testResponse';
+import logger from '../../util/logger';
+
+const mockLogger = logger as unknown as { error: jest.Mock; warn: jest.Mock };
 
 function makeStream(emissions: any[]) {
   const handlers: Record<string, Function[]> = { data: [], end: [], error: [] };
@@ -878,5 +881,66 @@ describe('MinioController', () => {
     );
     expect(result.length).toBe(1);
     expect(result[0].name).toBe('MEWP/mewp-external-ingestion/bugs/bugs.csv');
+  });
+
+  /**
+   * S3 failures are logged with the bucket and the operation, so an error row that only says
+   * "The specified bucket does not exist" can be traced to the call that produced it.
+   */
+  test('getBucketFileList: a missing bucket is logged as a warning naming the bucket, and still resolves []', async () => {
+    const req: any = { params: { bucketName: 'my-project' }, query: {} };
+    const stream = makeStream([]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+
+    const p = controller.getBucketFileList(req, buildRes());
+    stream.emitError(Object.assign(new Error('The specified bucket does not exist'), { code: 'NoSuchBucket' }));
+    const result: any = await p;
+
+    expect(result).toEqual([]);
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      'MinIO list objects failed (bucket=my-project): The specified bucket does not exist',
+      expect.objectContaining({ bucketName: 'my-project', code: 'NoSuchBucket' })
+    );
+  });
+
+  test('getBucketFileList: any other stream error stays an error and names the bucket', async () => {
+    const req: any = { params: { bucketName: 'templates' }, query: {} };
+    const stream = makeStream([]);
+    mockS3.listObjectsV2.mockReturnValueOnce(stream);
+
+    const p = controller.getBucketFileList(req, buildRes());
+    stream.emitError(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+    await p;
+
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      'MinIO list objects failed (bucket=templates): socket hang up',
+      expect.objectContaining({ bucketName: 'templates', code: 'ECONNRESET' })
+    );
+  });
+
+  test('getJSONContentFromFile: logs the bucket and object when getObject fails, response unchanged', async () => {
+    const req: any = { params: { bucketName: 'b', folderName: 'f', fileName: 'file.json' } };
+    mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => {
+      cb(Object.assign(new Error('The specified bucket does not exist'), { code: 'NoSuchBucket', key: 'f/file.json' }), null);
+    });
+
+    await expect(controller.getJSONContentFromFile(req, {} as any)).rejects.toContain('error due to NoSuchBucket');
+
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      'MinIO read object failed (bucket=b): The specified bucket does not exist',
+      expect.objectContaining({ bucketName: 'b', objectName: 'f/file.json', code: 'NoSuchBucket' })
+    );
+  });
+
+  test('S3 error logs never carry the credentials', async () => {
+    const req: any = { params: { bucketName: 'b', folderName: 'f', fileName: 'file.json' } };
+    mockS3.getObject.mockImplementation((_b: string, _k: string, cb: Function) => {
+      cb(Object.assign(new Error('denied'), { code: 'AccessDenied' }), null);
+    });
+
+    await controller.getJSONContentFromFile(req, {} as any).catch(() => undefined);
+
+    expect(JSON.stringify(mockLogger.error.mock.calls)).not.toMatch(/pass|"user"/);
   });
 });
