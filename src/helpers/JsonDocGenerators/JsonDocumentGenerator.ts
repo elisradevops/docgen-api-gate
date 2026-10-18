@@ -3,6 +3,7 @@ import { DocumentRequest } from '../../models/DocumentRequest';
 import logger from '../../util/logger';
 import { IDocumentRunManifestStep, IDocumentRunManifest } from '../../models/DocumentRun';
 import { buildStep } from '../runManifest';
+import { describeDownstreamFailure } from '../downstreamError';
 
 export interface GenerateContentControlsResult {
   results: any[];
@@ -58,10 +59,12 @@ export class JSONDocumentGenerator {
           // Attribution goes per call, not on the shared run store (these controls run concurrently),
           // in ONE metadata object: winston merges only the first one. The error's message, stack
           // and code are listed explicitly instead of passing the whole AxiosError.
+          const failure = describeDownstreamFailure(err);
           logger.error(`Error adding content control ${contentControl.title}`, {
-            message: err?.message,
-            stack: err?.stack,
-            code: typeof err?.code === 'string' ? err.code : undefined,
+            message: failure.message,
+            stack: failure.stack,
+            code: failure.code,
+            status: failure.status,
             step: 'generate-content-control',
             contentControlType: contentControl.type,
             contentControlTitle: contentControl.title,
@@ -119,12 +122,13 @@ export class JSONDocumentGenerator {
       );
       aggregateError.contentControlFailures = failures.map(({ result, contentControl }) => {
         const reason: any = (result as PromiseRejectedResult).reason;
+        const failure = describeDownstreamFailure(reason);
         return {
           title: contentControl.title,
           type: contentControl.type,
-          message: reason?.message || String(reason),
-          code: reason?.code,
-          stack: reason?.stack,
+          message: failure.message,
+          code: failure.code,
+          stack: failure.stack,
         };
       });
       aggregateError.resolvedRange = failures

@@ -162,6 +162,49 @@ describe('DocumentsGeneratorController', () => {
   });
 
   /**
+   * upstream error without a reason
+   * A service that answers an error without a message (an HTML page, an empty body) used to leave
+   * the rejection with no message at all; the transport message is kept instead.
+   */
+  test('upstream template call error without a message keeps the transport message and says none was sent', async () => {
+    const upstream: any = Object.assign(new Error('Request failed with status code 502'), {
+      response: { status: 502, data: '<html>Bad gateway</html>' },
+    });
+    axios.post.mockRejectedValueOnce(upstream);
+
+    const req = makeReq();
+    const res = buildRes();
+
+    await expect(controller.createJSONDoc(req, res)).rejects.toEqual(
+      expect.objectContaining({
+        message: expect.stringContaining('Request failed with status code 502 (service sent no error message'),
+        statusCode: 500,
+      })
+    );
+  });
+
+  /**
+   * upstream error with the service's frames
+   * The rejection's stack leads with where the service failed, not where api-gate rethrew it.
+   */
+  test('upstream template call error carries the service frames in its stack', async () => {
+    const frames = '    at generateDocTemplate (/usr/src/app/dist/controllers/index.js:1:1)';
+    const upstream: any = Object.assign(new Error('Request failed with status code 500'), {
+      response: { status: 500, data: { message: 'skin not found', stack: frames } },
+    });
+    axios.post.mockRejectedValueOnce(upstream);
+    const buildErrorChain = jest.spyOn(controller as any, 'buildErrorChain');
+
+    await controller.createJSONDoc(makeReq(), buildRes()).catch(() => undefined);
+
+    // What the run record is built from: the rethrown error, whose stack now leads with the service's frames.
+    const [recorded] = buildErrorChain.mock.calls[0] as [any];
+    expect(recorded.message).toBe('skin not found');
+    expect(recorded.stack).toContain(frames);
+    expect(recorded.stack.indexOf(frames)).toBeLessThan(recorded.stack.indexOf('--- api-gate ---'));
+  });
+
+  /**
    * internal error handling
    * If generating content controls fails internally, controller rejects with the thrown error message.
    */

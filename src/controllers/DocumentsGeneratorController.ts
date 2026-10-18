@@ -21,6 +21,7 @@ import { buildEnvironment, buildInputs, buildStep, emptyManifest } from '../help
 import { resolveDocType } from '../helpers/runDocType';
 import { authorizeCaptureMode } from '../helpers/diagnostics/captureAuthorization';
 import { assertTemplateExists } from '../helpers/templatePreflight';
+import { describeDownstreamFailure } from '../helpers/downstreamError';
 import { buildRunInput } from '../helpers/runInput';
 import { credentialKind } from '../helpers/credentialKind';
 import {
@@ -228,7 +229,12 @@ export class DocumentsGeneratorController {
               wrapped.step = err.step;
               throw wrapped;
             }
-            const wrapped: any = new Error(responseError.message);
+            // The service may answer without a message (an HTML error page, an empty body):
+            // keep the transport message rather than record an error with none.
+            const failure = describeDownstreamFailure(err);
+            const wrapped: any = new Error(failure.downstreamMessage || failure.message);
+            // The service's own frames say where it failed; the wrapper's stack only says where it was rethrown.
+            if (failure.downstreamStack) wrapped.stack = failure.stack;
             wrapped.step = err.step;
             throw wrapped;
           }
@@ -540,8 +546,8 @@ export class DocumentsGeneratorController {
           return resolve(documentUrl.data);
         } catch (err) {
           if (err.response) {
-            const responseError = err.response.data;
-            throw new Error(responseError.message);
+            const failure = describeDownstreamFailure(err);
+            throw new Error(failure.downstreamMessage || failure.message);
           }
           throw err;
         }

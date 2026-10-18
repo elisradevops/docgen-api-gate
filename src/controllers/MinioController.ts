@@ -181,7 +181,7 @@ export class MinioController {
         this.handleStream(s3Client, req, minioRequest, url, objects, resolve);
         return objects;
       } catch (err) {
-        logger.error(err);
+        this.logMinioError('list objects', { bucketName: minioRequest.bucketName }, err);
         reject(err.message);
       }
     });
@@ -330,7 +330,7 @@ export class MinioController {
               // Delete the temporary file after uploading to Minio
               fs.unlinkSync(filePath);
               if (err) {
-                logger.error('Error uploading file:', err);
+                this.logMinioError('upload', { bucketName: minioRequest.bucketName, objectName }, err);
                 return reject(err);
               }
               return resolve({
@@ -350,7 +350,7 @@ export class MinioController {
           );
         })
         .catch((err) => {
-          logger.error(err);
+          this.logMinioError('upload', { bucketName: minioRequest.bucketName, objectName }, err);
           return reject(err.message);
         });
     });
@@ -384,7 +384,7 @@ export class MinioController {
         if (foundKey) {
           s3Client.removeObject(bucketName, foundKey, (err) => {
             if (err) {
-              logger.error(`Error deleting file ${foundKey}:`, err);
+              this.logMinioError('delete object', { bucketName, objectName: foundKey ?? undefined }, err);
               return reject(err.message);
             }
             return resolve(`File ${foundKey} deleted successfully from ${bucketName}`);
@@ -395,7 +395,7 @@ export class MinioController {
         }
       });
       stream.on('error', (err) => {
-        logger.error(err);
+        this.logMinioError('list objects for delete', { bucketName }, err);
         return reject(err.message);
       });
     });
@@ -414,7 +414,7 @@ export class MinioController {
         minioRequest.folderName + '/' + minioRequest.fileName,
         (err, dataStream) => {
           if (err) {
-            logger.error(err);
+            this.logMinioError('read object', { bucketName: minioRequest.bucketName, objectName: `${minioRequest.folderName}/${minioRequest.fileName}` }, err);
             return reject(`error due to ${err.code} - ${err.key}`);
           }
           dataStream.on('data', (chunk) => {
@@ -427,7 +427,7 @@ export class MinioController {
             return resolve(json);
           });
           dataStream.on('error', (streamErr) => {
-            logger.error(streamErr);
+            this.logMinioError('read object stream', { bucketName: minioRequest.bucketName, objectName: `${minioRequest.folderName}/${minioRequest.fileName}` }, streamErr);
             return reject(streamErr);
           });
         },
@@ -447,7 +447,7 @@ export class MinioController {
 
       s3Client.getObject(bucketName, objectName, (err, dataStream) => {
         if (err) {
-          logger.error(err);
+          this.logMinioError('read object', { bucketName, objectName }, err);
           return reject(`error due to ${err.code} - ${err.key}`);
         }
         dataStream.on('data', (chunk) => {
@@ -463,7 +463,7 @@ export class MinioController {
           }
         });
         dataStream.on('error', (streamErr) => {
-          logger.error(streamErr);
+          this.logMinioError('read object stream', { bucketName, objectName }, streamErr);
           return reject(streamErr);
         });
       });
@@ -486,7 +486,7 @@ export class MinioController {
       }
       s3Client.getObject(bucketName, objectName, (err, dataStream) => {
         if (err) {
-          logger.error(err);
+          this.logMinioError('download', { bucketName, objectName }, err);
           return reject(`error due to ${err.code} - ${err.key}`);
         }
         const fileName = objectName.split('/').pop() || 'file';
@@ -497,7 +497,7 @@ export class MinioController {
           resolve(undefined);
         });
         dataStream.on('error', (streamErr) => {
-          logger.error(streamErr);
+          this.logMinioError('download stream', { bucketName, objectName }, streamErr);
           reject(streamErr);
         });
         dataStream.pipe(res);
@@ -551,7 +551,7 @@ export class MinioController {
               .then(() => s3Client.setBucketPolicy(minioRequest.bucketName, JSON.stringify(policy)))
               .then(() => s3Client.setBucketLifecycle(minioRequest.bucketName, lifecycleConfig))
               .catch((err) => {
-                logger.error(err);
+                this.logMinioError('create bucket', { bucketName: minioRequest.bucketName }, err);
                 return reject(err.message);
               });
 
@@ -564,9 +564,27 @@ export class MinioController {
           }
         })
         .catch((err) => {
-          logger.error(err);
+          this.logMinioError('check bucket', { bucketName: minioRequest.bucketName }, err);
           return reject(err.message);
         });
+    });
+  }
+
+  // One record per S3 failure that names what was being done to which bucket. The raw S3Error alone says
+  // "The specified bucket does not exist" with minio-internal frames and nothing to tell the calls
+  // apart. A single metadata object (winston merges only the first); never the credentials.
+  private logMinioError(
+    operation: string,
+    context: { bucketName?: string; objectName?: string },
+    err: any,
+    level: 'error' | 'warn' = 'error',
+  ) {
+    const bucket = context.bucketName ? ` (bucket=${context.bucketName})` : '';
+    logger[level](`MinIO ${operation} failed${bucket}: ${err?.message || err}`, {
+      bucketName: context.bucketName,
+      objectName: context.objectName,
+      code: typeof err?.code === 'string' ? err.code : undefined,
+      stack: err?.stack,
     });
   }
 
@@ -723,7 +741,7 @@ export class MinioController {
             );
           }
         } catch (error) {
-          logger.error(`Error fetching metadata for ${obj.name}:`, error);
+          this.logMinioError('read object metadata', { bucketName: minioRequest.bucketName, objectName: obj.name }, error);
           obj.createdBy = '';
           obj.createdById = '';
           obj.inputSummary = '';
@@ -747,7 +765,13 @@ export class MinioController {
     });
 
     stream.on('error', (err) => {
-      logger.error('Stream error:', err);
+      // A listing against a bucket that does not exist yet is handled (an empty list), not a fault.
+      this.logMinioError(
+        'list objects',
+        { bucketName: minioRequest.bucketName },
+        err,
+        err?.code === 'NoSuchBucket' ? 'warn' : 'error',
+      );
       resolve([]);
     });
   }

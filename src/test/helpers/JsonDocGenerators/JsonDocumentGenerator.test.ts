@@ -153,6 +153,56 @@ describe('JSONDocumentGenerator', () => {
     );
   });
 
+  test("records the downstream service's own message, not just the axios status line", async () => {
+    const failure: any = Object.assign(new Error('Request failed with status code 500'), {
+      stack: 'axios stack',
+      response: { status: 500, data: { message: 'The specified bucket does not exist', code: 'NoSuchBucket' } },
+    });
+    (mockedAxios.post as jest.Mock).mockRejectedValueOnce(failure);
+
+    await expect(
+      generator.generateContentControls({ ...baseRequest, contentControls: [baseRequest.contentControls[0]] })
+    ).rejects.toMatchObject({
+      contentControlFailures: [
+        expect.objectContaining({
+          message: 'Request failed with status code 500: The specified bucket does not exist',
+          code: 'NoSuchBucket',
+        }),
+      ],
+    });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        message: 'Request failed with status code 500: The specified bucket does not exist',
+        code: 'NoSuchBucket',
+        status: 500,
+      })
+    );
+  });
+
+  test("records the service's own stack frames in the log and the error chain", async () => {
+    const frames = '    at addChangeDescriptionTable (/usr/src/app/dist/controllers/index.js:1:1)';
+    const failure: any = Object.assign(new Error('Request failed with status code 500'), {
+      stack: 'Error: Request failed with status code 500\n    at createError (axios.js:1:1)',
+      response: { status: 500, data: { message: 'x is not a function', stack: frames } },
+    });
+    (mockedAxios.post as jest.Mock).mockRejectedValueOnce(failure);
+
+    const error: any = await generator
+      .generateContentControls({ ...baseRequest, contentControls: [baseRequest.contentControls[0]] })
+      .catch((e) => e);
+
+    expect(error.contentControlFailures[0].stack).toContain(frames);
+    expect(error.contentControlFailures[0].stack).toContain('createError');
+    expect(error.contentControlFailures[0].stack.indexOf(frames)).toBeLessThan(
+      error.contentControlFailures[0].stack.indexOf('createError')
+    );
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ stack: expect.stringContaining(frames) })
+    );
+  });
+
   test('carries the resolved range of a content control that failed after discovery', async () => {
     const range = { rangeType: 'release', to: { id: 418, source: 'auto' }, from: { id: 409, source: 'auto' } };
     const failure: any = Object.assign(new Error('Request failed with status code 500'), {
