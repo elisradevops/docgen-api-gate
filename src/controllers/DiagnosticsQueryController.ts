@@ -218,7 +218,10 @@ export class DiagnosticsQueryController {
       return;
     }
     try {
-      const [detailA, detailB] = await Promise.all([getRunDetail(a), getRunDetail(b)]);
+      const [detailA, detailB] = await Promise.all([
+        getRunDetail(a, { loggedCounts: false }),
+        getRunDetail(b, { loggedCounts: false }),
+      ]);
       if (!detailA || !detailB) {
         res.status(404).json({ message: 'One or both runs not found', error: 'run_not_found' });
         return;
@@ -272,7 +275,7 @@ export class DiagnosticsQueryController {
       return;
     }
     try {
-      const detail = await getRunDetail(req.params.runId);
+      const detail = await getRunDetail(req.params.runId, { loggedCounts: false });
       if (!detail) {
         res.status(404).json({ message: 'Run not found', error: 'run_not_found' });
         return;
@@ -319,7 +322,10 @@ export class DiagnosticsQueryController {
       return;
     }
     try {
-      const [detailA, detailB] = await Promise.all([getRunDetail(a), getRunDetail(b)]);
+      const [detailA, detailB] = await Promise.all([
+        getRunDetail(a, { loggedCounts: false }),
+        getRunDetail(b, { loggedCounts: false }),
+      ]);
       if (!detailA || !detailB) {
         res.status(404).json({ message: 'One or both runs not found', error: 'run_not_found' });
         return;

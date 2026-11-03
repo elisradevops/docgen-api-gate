@@ -102,10 +102,16 @@ async function getLoggedCounts(runId: string): Promise<LoggedCountRow[] | undefi
   }
 }
 
-export async function getRunDetail(runId: string): Promise<RunDetail | undefined> {
+// `loggedCounts: false` for callers that only read `run` (compare, baseline) and would otherwise pay
+// for the log aggregation and throw its result away.
+export async function getRunDetail(
+  runId: string,
+  options: { loggedCounts?: boolean } = {}
+): Promise<RunDetail | undefined> {
   const run = await DocumentRun.findOne({ runId });
   if (!run) return undefined;
   const timeline = buildTimeline(run.manifest?.steps);
+  if (options.loggedCounts === false) return { run, timeline };
   const rows = await getLoggedCounts(runId);
   if (!rows) return { run, timeline };
   const total = (level: LoggedCountRow['level']) =>

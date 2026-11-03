@@ -112,6 +112,16 @@ describe('getRunDetail', () => {
     expect(detail?.timeline[0]).toMatchObject({ errorCount: 2, warnCount: 1 });
   });
 
+  test('skips the log aggregation when loggedCounts is false, still returning run and stored timeline', async () => {
+    const run = { runId: 'r1', manifest: { steps: [{ name: 'a', type: 'render-document', status: 'succeeded', durationMs: 5, errorCount: 0 }] } };
+    mockFindOne.mockResolvedValue(run);
+    const detail = await getRunDetail('r1', { loggedCounts: false });
+    expect(mockAggregate).not.toHaveBeenCalled();
+    expect(detail?.run).toBe(run);
+    expect(detail?.timeline).toHaveLength(1);
+    expect(detail?.loggedErrors).toBeUndefined();
+  });
+
   test('a failing log aggregate never fails the run detail (falls back to stored counts)', async () => {
     mockFindOne.mockResolvedValue({ runId: 'r1', manifest: { steps: [{ name: 'a', type: 'render-document', status: 'succeeded', durationMs: 1, errorCount: 0 }] } });
     mockAggregate.mockRejectedValue(new Error('mongo down'));
